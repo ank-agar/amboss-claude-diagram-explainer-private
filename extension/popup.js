@@ -169,7 +169,8 @@
               return;
             }
 
-            // Step 2: Build the message text
+            // Step 2: Load templates and build the message text
+            loadTemplates(function () {
             var messageText = buildMessageText(skill, scraped);
 
             // Step 3: Delegate to background worker (survives popup close)
@@ -191,55 +192,38 @@
                 }
               }
             );
+            }); // end loadTemplates
           }
         );
       }
     );
   }
 
-  // ── Build the claude.ai message ──
-  function buildMessageText(skill, scraped) {
-    var parts = [];
+  // ── Build the claude.ai message using template engine ──
+  // Templates can be customized via storage; falls back to CONFIG defaults
+  var cachedPromptTemplate = null;
+  var cachedWrongChoiceTemplate = null;
 
-    // Question + attending tip grouped together (context before the answer)
-    parts.push("Question:\n" + scraped.question);
-
-    if (scraped.attendingTip) {
-      parts.push("Attending Tip:\n" + scraped.attendingTip);
+  function loadTemplates(callback) {
+    if (cachedPromptTemplate !== null) {
+      callback();
+      return;
     }
-
-    // Answer details
-    if (scraped.correctAnswer) {
-      parts.push("Correct Answer: " + scraped.correctAnswer.letter + ". " + scraped.correctAnswer.text);
-    }
-
-    if (scraped.explanation) {
-      parts.push("Explanation:\n" + scraped.explanation);
-    }
-
-    var answerKeys = Object.keys(scraped.answers);
-    if (answerKeys.length > 0) {
-      var answerLines = answerKeys.map(function (letter) {
-        var a = scraped.answers[letter];
-        var marker = a.isCorrect ? " (CORRECT)" : "";
-        return letter + ". " + a.text + marker;
-      });
-      parts.push("All Answer Choices:\n" + answerLines.join("\n"));
-    }
-
-    // If user got it wrong, add a section asking for explanation of their wrong choice
-    if (scraped.userWrongChoice) {
-      var wrongLine = "\nAlso make a separate output/diagram for what this other choice is and why it's wrong: "
-        + scraped.userWrongChoice.letter + ". " + scraped.userWrongChoice.text;
-      if (scraped.userWrongChoice.explanation) {
-        wrongLine += " and here's the official explanation of what it is/why it's wrong so you include that in your diagram/output as well: "
-          + scraped.userWrongChoice.explanation;
+    chrome.storage.local.get(
+      [C.STORAGE_KEY_PROMPT_TEMPLATE, C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE],
+      function (result) {
+        if (chrome.runtime.lastError) { /* use defaults */ }
+        cachedPromptTemplate = result[C.STORAGE_KEY_PROMPT_TEMPLATE] || C.PROMPT_TEMPLATE;
+        cachedWrongChoiceTemplate = result[C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE] || C.WRONG_CHOICE_TEMPLATE;
+        callback();
       }
-      parts.push(wrongLine);
-    }
+    );
+  }
 
-    // Skill prefix on its own line, then content
-    return skill.prefix + "\n" + parts.join("\n\n");
+  function buildMessageText(skill, scraped) {
+    return TemplateEngine.buildMessage(
+      skill, scraped, cachedPromptTemplate, cachedWrongChoiceTemplate
+    );
   }
 
   // ── Start ──

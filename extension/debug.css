@@ -178,3 +178,38 @@ h2:first-child {
 .log-data { color: var(--text); }
 .log-label { color: var(--accent); font-weight: 600; }
 .log-time { color: var(--text-dim); }
+
+/* ── Template editor ── */
+.template-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.template-editor label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.template-editor .hint {
+  font-size: 10px;
+  color: #45475a;
+}
+
+.template-editor textarea {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #313244;
+  border-radius: var(--radius);
+  padding: 10px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.template-editor textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}

@@ -37,9 +37,44 @@ var CONFIG = {
     { id: "usmle-flowchart", label: "USMLE Flowchart (diagram only)", prefix: "/usmle-flowchart " },
   ],
 
+  // ── Prompt template ──
+  // Users can customize how scraped content is structured before sending.
+  // Available placeholders: {{question}}, {{attendingTip}}, {{correctAnswer}},
+  // {{explanation}}, {{allAnswers}}, {{wrongChoiceSection}}, {{skillPrefix}}
+  // Sections wrapped in {{#if field}}...{{/if}} are omitted when that field is empty.
+  PROMPT_TEMPLATE: [
+    "{{skillPrefix}}",
+    "Question:",
+    "{{question}}",
+    "{{#if attendingTip}}",
+    "Attending Tip:",
+    "{{attendingTip}}",
+    "{{/if}}",
+    "{{#if correctAnswer}}",
+    "Correct Answer: {{correctAnswer}}",
+    "{{/if}}",
+    "{{#if explanation}}",
+    "Explanation:",
+    "{{explanation}}",
+    "{{/if}}",
+    "{{#if allAnswers}}",
+    "All Answer Choices:",
+    "{{allAnswers}}",
+    "{{/if}}",
+    "{{#if wrongChoiceSection}}",
+    "",
+    "{{wrongChoiceSection}}",
+    "{{/if}}",
+  ].join("\n"),
+
+  // Template for the wrong-choice addendum (used when user got it wrong)
+  WRONG_CHOICE_TEMPLATE: "Also make a separate output/diagram for what this other choice is and why it's wrong: {{wrongChoice}}{{#if wrongExplanation}} and here's the official explanation of what it is/why it's wrong so you include that in your diagram/output as well: {{wrongExplanation}}{{/if}}",
+
   // ── Storage keys ──
   STORAGE_KEY_SELECTED_SKILL: "selectedSkill",
   STORAGE_KEY_OPEN_IN_BACKGROUND: "openInBackground",
+  STORAGE_KEY_PROMPT_TEMPLATE: "promptTemplate",
+  STORAGE_KEY_WRONG_CHOICE_TEMPLATE: "wrongChoiceTemplate",
 
   // ── Defaults ──
   DEFAULT_SKILL_ID: "causal-explainer-brief-v2",

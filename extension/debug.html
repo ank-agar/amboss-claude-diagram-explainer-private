@@ -39,6 +39,18 @@
       <button class="btn" data-test="preview-flowchart">Preview Full Message (Flowchart)</button>
     </div>
 
+    <h2>Prompt Template (Customizable)</h2>
+    <div class="template-editor">
+      <label>Main template <span class="hint">Placeholders: {{skillPrefix}}, {{question}}, {{attendingTip}}, {{correctAnswer}}, {{explanation}}, {{allAnswers}}, {{wrongChoiceSection}}. Use {{#if field}}...{{/if}} for conditionals.</span></label>
+      <textarea id="template-main" rows="16" spellcheck="false"></textarea>
+      <label>Wrong choice addendum <span class="hint">Placeholders: {{wrongChoice}}, {{wrongExplanation}}</span></label>
+      <textarea id="template-wrong" rows="3" spellcheck="false"></textarea>
+      <div class="btn-row">
+        <button class="btn" id="btn-save-templates">Save Templates</button>
+        <button class="btn" id="btn-reset-templates">Reset to Defaults</button>
+      </div>
+    </div>
+
     <h2>Storage</h2>
     <div class="btn-row">
       <button class="btn" data-test="storage-dump">Dump Storage</button>
@@ -55,6 +67,7 @@
   </section>
 
   <script src="config.js"></script>
+  <script src="template-engine.js"></script>
   <script src="debug.js"></script>
 </body>
 </html>

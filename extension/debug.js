@@ -90,29 +90,7 @@
     });
   }
 
-  // ── Build message text (same as popup.js) ──
-  function buildMessageText(prefix, scraped) {
-    var parts = [];
-    parts.push("Question:\n" + scraped.question);
-    if (scraped.correctAnswer) {
-      parts.push("Correct Answer: " + scraped.correctAnswer.letter + ". " + scraped.correctAnswer.text);
-    }
-    if (scraped.explanation) {
-      parts.push("Explanation:\n" + scraped.explanation);
-    }
-    if (scraped.attendingTip) {
-      parts.push("Attending Tip:\n" + scraped.attendingTip);
-    }
-    var keys = Object.keys(scraped.answers);
-    if (keys.length > 0) {
-      var lines = keys.map(function (l) {
-        var a = scraped.answers[l];
-        return l + ". " + a.text + (a.isCorrect ? " (CORRECT)" : "");
-      });
-      parts.push("All Answer Choices:\n" + lines.join("\n"));
-    }
-    return prefix + parts.join("\n\n");
-  }
+  // Message building is now handled by buildMessageTextDebug() + TemplateEngine
 
   // ── Individual test handlers ──
   var testHandlers = {
@@ -218,11 +196,11 @@
     },
 
     "preview-message": function () {
-      var skill = C.SKILLS[0]; // causal-explainer
+      var skill = C.SKILLS.find(function (s) { return s.id === "causal-explainer-brief-v2"; }) || C.SKILLS[0];
       scrapeAmbossTab(function (data, err) {
         if (err) { log("Preview", "FAIL: " + err, "err"); return; }
         if (!data.question) { log("Preview", "No question to preview", "warn"); return; }
-        var msg = buildMessageText(skill.prefix, data);
+        var msg = buildMessageTextDebug(skill.prefix, data);
         log("Preview", "Skill: " + skill.label, "info");
         log("Preview", "Total length: " + msg.length + " chars", "info");
         log("Preview", truncate(msg, 2000), "data");
@@ -230,11 +208,11 @@
     },
 
     "preview-flowchart": function () {
-      var skill = C.SKILLS[1]; // usmle-flowchart
+      var skill = C.SKILLS.find(function (s) { return s.id === "usmle-flowchart"; }) || C.SKILLS[1];
       scrapeAmbossTab(function (data, err) {
         if (err) { log("Preview", "FAIL: " + err, "err"); return; }
         if (!data.question) { log("Preview", "No question to preview", "warn"); return; }
-        var msg = buildMessageText(skill.prefix, data);
+        var msg = buildMessageTextDebug(skill.prefix, data);
         log("Preview", "Skill: " + skill.label, "info");
         log("Preview", "Total length: " + msg.length + " chars", "info");
         log("Preview", truncate(msg, 2000), "data");
@@ -329,7 +307,7 @@
           return;
         }
         C.SKILLS.forEach(function (skill) {
-          var msg = buildMessageText(skill.prefix, data);
+          var msg = buildMessageTextDebug(skill.prefix, data);
           log("Test 4", skill.id + ": " + msg.length + " chars, starts with: " + truncate(msg, 60), "ok");
         });
         next();
@@ -355,6 +333,50 @@
     }
     runNext();
   });
+
+  // ── Template editor ──
+  var templateMain = document.getElementById("template-main");
+  var templateWrong = document.getElementById("template-wrong");
+  var btnSaveTemplates = document.getElementById("btn-save-templates");
+  var btnResetTemplates = document.getElementById("btn-reset-templates");
+
+  // Load current templates into the textareas
+  chrome.storage.local.get(
+    [C.STORAGE_KEY_PROMPT_TEMPLATE, C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE],
+    function (result) {
+      if (chrome.runtime.lastError) return;
+      templateMain.value = result[C.STORAGE_KEY_PROMPT_TEMPLATE] || C.PROMPT_TEMPLATE;
+      templateWrong.value = result[C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE] || C.WRONG_CHOICE_TEMPLATE;
+    }
+  );
+
+  btnSaveTemplates.addEventListener("click", function () {
+    var obj = {};
+    obj[C.STORAGE_KEY_PROMPT_TEMPLATE] = templateMain.value;
+    obj[C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE] = templateWrong.value;
+    chrome.storage.local.set(obj, function () {
+      log("Templates", "Saved!", "ok");
+    });
+  });
+
+  btnResetTemplates.addEventListener("click", function () {
+    templateMain.value = C.PROMPT_TEMPLATE;
+    templateWrong.value = C.WRONG_CHOICE_TEMPLATE;
+    chrome.storage.local.remove(
+      [C.STORAGE_KEY_PROMPT_TEMPLATE, C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE],
+      function () {
+        log("Templates", "Reset to defaults", "ok");
+      }
+    );
+  });
+
+  // Update debug preview to use template engine
+  function buildMessageTextDebug(prefix, scraped) {
+    var skill = { prefix: prefix };
+    var promptTpl = templateMain.value || C.PROMPT_TEMPLATE;
+    var wrongTpl = templateWrong.value || C.WRONG_CHOICE_TEMPLATE;
+    return TemplateEngine.buildMessage(skill, scraped, promptTpl, wrongTpl);
+  }
 
   // ── Copy report ──
   document.getElementById("btn-copy-report").addEventListener("click", function () {

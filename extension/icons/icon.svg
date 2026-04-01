@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Pill capsule body - left half (purple) -->
+  <path d="M44 20 C24 20 20 40 20 64 C20 88 24 108 44 108 L64 108 L64 20 Z" fill="#7c6cf7"/>
+  <!-- Pill capsule body - right half (teal) -->
+  <path d="M84 20 C104 20 108 40 108 64 C108 88 104 108 84 108 L64 108 L64 20 Z" fill="#4ade80"/>
+  <!-- Flowchart: top node -->
+  <rect x="48" y="34" width="32" height="16" rx="3" fill="white" opacity="0.9"/>
+  <!-- Flowchart: arrow down -->
+  <line x1="64" y1="50" x2="64" y2="58" stroke="white" stroke-width="2.5" opacity="0.9"/>
+  <!-- Flowchart: middle node -->
+  <rect x="48" y="58" width="32" height="16" rx="3" fill="white" opacity="0.9"/>
+  <!-- Flowchart: split arrows -->
+  <line x1="64" y1="74" x2="64" y2="78" stroke="white" stroke-width="2.5" opacity="0.9"/>
+  <line x1="64" y1="78" x2="48" y2="78" stroke="white" stroke-width="2.5" opacity="0.9"/>
+  <line x1="64" y1="78" x2="80" y2="78" stroke="white" stroke-width="2.5" opacity="0.9"/>
+  <line x1="48" y1="78" x2="48" y2="82" stroke="white" stroke-width="2.5" opacity="0.9"/>
+  <line x1="80" y1="78" x2="80" y2="82" stroke="white" stroke-width="2.5" opacity="0.9"/>
+  <!-- Flowchart: bottom left node -->
+  <rect x="34" y="82" width="28" height="14" rx="3" fill="white" opacity="0.9"/>
+  <!-- Flowchart: bottom right node -->
+  <rect x="66" y="82" width="28" height="14" rx="3" fill="white" opacity="0.9"/>
+</svg>

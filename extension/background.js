@@ -110,8 +110,12 @@ function drainQueue() {
       slots--;
       if (item.isExpansion) {
         openClaudeTab(item.text, true, function () {
-          // Resume expansion after queued item is sent
-          scheduleExpansionStep(2000);
+          // Resume expansion only if still running
+          chrome.storage.local.get(["expansion"], function (r) {
+            if (r.expansion && r.expansion.running) {
+              advanceInterleaved(function () { scheduleExpansionStep(2000); });
+            }
+          });
         });
       } else {
         openClaudeTab(item.text, item.openInBackground);
@@ -212,10 +216,13 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       claudeWindowId: null,
       claudeIndex: 0,
     };
-    // Don't clear sendTimestamps -- respect existing rate limits
-    chrome.storage.local.set({ expansion: exp }, function () {
+    // Clear any queued expansion items from a previous expansion
+    chrome.storage.local.get(["sendQueue"], function (qResult) {
+      var cleanQueue = (qResult.sendQueue || []).filter(function (item) { return !item.isExpansion; });
+      chrome.storage.local.set({ expansion: exp, sendQueue: cleanQueue }, function () {
       sendResponse({ success: true, message: "Expanding " + (exp.endQ - exp.startQ + 1) + " questions..." });
       scheduleExpansionStep(500);
+      });
     });
     return true;
   }
@@ -510,7 +517,7 @@ function expansionStep() {
               var delayMs = getNextSlotDelayMs(ts, cooldown);
               chrome.storage.local.get(["expansion"], function (r2) {
                 var e2 = r2.expansion;
-                if (!e2) return;
+                if (!e2 || !e2.running) return;
                 e2.phase = "sep-send-claude";
                 chrome.storage.local.set({ expansion: e2 });
               });

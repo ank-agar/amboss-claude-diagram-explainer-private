@@ -59,12 +59,16 @@ function getNextSlotDelayMs(timestamps, cooldownMs) {
 }
 
 // ── Open tab and send (only called when it's time) ──
+// callback(tabId) is called once the Claude tab has loaded and injection has been sent
 
-function openAndSendNow(messageText, openInBackground) {
+function openAndSendNow(messageText, openInBackground, callback) {
   chrome.tabs.create(
     { url: C.CLAUDE_NEW_CHAT_URL, active: !openInBackground },
     function (newTab) {
-      if (chrome.runtime.lastError) return;
+      if (chrome.runtime.lastError) {
+        if (callback) callback(null);
+        return;
+      }
 
       var tabId = newTab.id;
       var done = false;
@@ -73,6 +77,7 @@ function openAndSendNow(messageText, openInBackground) {
         if (done) return;
         done = true;
         chrome.tabs.onUpdated.removeListener(loadListener);
+        if (callback) callback(tabId);
       }, C.TAB_LOAD_TIMEOUT_MS);
 
       var loadListener = function (updatedTabId, changeInfo) {
@@ -87,6 +92,7 @@ function openAndSendNow(messageText, openInBackground) {
             type: C.MSG_INJECT_AND_SUBMIT,
             text: messageText,
           });
+          if (callback) callback(tabId);
         }, C.CLAUDE_INJECT_DELAY_MS);
       };
 
@@ -113,7 +119,14 @@ function drainQueue() {
     while (queue.length > 0 && sent < slotsAvailable) {
       var item = queue.shift();
       timestamps.push(Date.now());
-      openAndSendNow(item.text, item.openInBackground);
+      if (item.isExpansion) {
+        // For expansion items, resume expansion after tab opens
+        openAndSendNow(item.text, item.openInBackground, function () {
+          advanceExpansion();
+        });
+      } else {
+        openAndSendNow(item.text, item.openInBackground);
+      }
       sent++;
     }
 
@@ -340,23 +353,52 @@ function scrapeAndSendForExpansion(tabId, exp, questionNum) {
             return;
           }
 
-          // Build message using template engine (loaded inline since we're in SW)
           var skill = { prefix: exp.skillPrefix };
           var messageText = buildExpansionMessage(skill, scraped);
 
-          // Queue the Claude send through the existing rate-limited system
-          chrome.runtime.sendMessage({
-            type: C.MSG_OPEN_AND_INJECT,
-            text: messageText,
-            openInBackground: true,
-          }, function () {
-            // Claude tab is queued/sent. Advance to next question.
-            advanceExpansion();
-          });
+          // Directly open the Claude tab and wait for it to be ready
+          // before advancing to the next question (ensures tab ordering)
+          queueClaudeTabForExpansion(messageText);
         }
       );
     }
   );
+}
+
+/**
+ * Queue a Claude tab send for expansion. If a slot is available, opens
+ * and sends immediately, then advances. If not, queues it and sets an
+ * alarm -- the expansion will resume when the queue drains.
+ */
+function queueClaudeTabForExpansion(messageText) {
+  loadState(function (queue, timestamps, cooldownMs) {
+    timestamps = pruneStaleSendTimestamps(timestamps, cooldownMs);
+    var slotsAvailable = C.MAX_CONCURRENT_REQUESTS - timestamps.length;
+
+    if (slotsAvailable > 0 && queue.length === 0) {
+      // Send immediately, advance after tab opens
+      timestamps.push(Date.now());
+      saveState(queue, timestamps);
+      openAndSendNow(messageText, true, function () {
+        advanceExpansion();
+      });
+    } else {
+      // Queue it. The expansion will NOT advance until this item drains.
+      // Tag it so drainQueue knows to resume expansion after sending it.
+      queue.push({
+        text: messageText,
+        openInBackground: true,
+        addedAt: Date.now(),
+        isExpansion: true,
+      });
+      saveState(queue, timestamps, function () {
+        var delayMs = getNextSlotDelayMs(timestamps, cooldownMs);
+        var delayMin = Math.max(delayMs / 60000, 0.5);
+        chrome.alarms.create(ALARM_NAME, { delayInMinutes: delayMin });
+      });
+      // Don't advance -- drainQueue will call advanceExpansion when it sends this item
+    }
+  });
 }
 
 function buildExpansionMessage(skill, scraped) {
@@ -375,26 +417,16 @@ function advanceExpansion() {
     exp.currentQ++;
     chrome.storage.local.set({ expansion: exp }, function () {
       if (exp.currentQ > exp.endQ) {
+        // All done
         exp.running = false;
         chrome.storage.local.set({ expansion: exp });
         return;
       }
 
-      // Check if we need to wait for a queue slot before processing next
-      loadState(function (queue, timestamps, cooldownMs) {
-        timestamps = pruneStaleSendTimestamps(timestamps, cooldownMs);
-        var slotsAvailable = C.MAX_CONCURRENT_REQUESTS - timestamps.length - queue.length;
-
-        if (slotsAvailable > 0) {
-          // Slot available, process immediately
-          processNextExpansionQuestion();
-        } else {
-          // Wait for a slot to open, then continue
-          var delayMs = getNextSlotDelayMs(timestamps, cooldownMs);
-          var delayMin = Math.max(delayMs / 60000, 0.5);
-          chrome.alarms.create(EXPANSION_ALARM, { delayInMinutes: delayMin });
-        }
-      });
+      // Process the next question immediately.
+      // It will open the AMBOSS tab, scrape, then call queueClaudeTabForExpansion
+      // which handles waiting for queue slots if needed.
+      processNextExpansionQuestion();
     });
   });
 }

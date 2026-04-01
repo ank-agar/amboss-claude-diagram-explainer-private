@@ -323,10 +323,19 @@ function processNextExpansionQuestion() {
           clearTimeout(timeoutId);
           chrome.tabs.onUpdated.removeListener(listener);
 
-          // Step 3: Wait a bit for page JS, then scrape
+          // Step 3: Wait for SPA to render, then scrape with retries
           setTimeout(function () {
-            scrapeAndSendForExpansion(ambossTab.id, exp, questionNum);
-          }, C.EXPANSION_TAB_LOAD_WAIT_MS);
+            scrapeWithRetry(ambossTab.id, C.EXPANSION_SCRAPE_MAX_RETRIES, function (scraped) {
+              if (!scraped || !scraped.question) {
+                // Give up on this question, advance
+                advanceExpansion();
+                return;
+              }
+              var skill = { prefix: exp.skillPrefix };
+              var messageText = buildExpansionMessage(skill, scraped);
+              queueClaudeTabForExpansion(messageText);
+            });
+          }, C.EXPANSION_INITIAL_WAIT_MS);
         };
 
         chrome.tabs.onUpdated.addListener(listener);
@@ -335,30 +344,44 @@ function processNextExpansionQuestion() {
   });
 }
 
-function scrapeAndSendForExpansion(tabId, exp, questionNum) {
-  // Inject config then scraper
+/**
+ * Scrape an AMBOSS tab with retries. AMBOSS is an SPA so the question
+ * content may not be rendered when the page reports "complete".
+ * Retries every EXPANSION_SCRAPE_RETRY_INTERVAL_MS until content appears.
+ */
+function scrapeWithRetry(tabId, retriesLeft, callback) {
   chrome.scripting.executeScript(
     { target: { tabId: tabId }, files: ["config.js"] },
     function () {
-      if (chrome.runtime.lastError) { advanceExpansion(); return; }
+      if (chrome.runtime.lastError) {
+        if (retriesLeft > 0) {
+          setTimeout(function () { scrapeWithRetry(tabId, retriesLeft - 1, callback); }, C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS);
+        } else {
+          callback(null);
+        }
+        return;
+      }
 
       chrome.scripting.executeScript(
         { target: { tabId: tabId }, files: ["scraper.js"] },
         function (results) {
-          if (chrome.runtime.lastError) { advanceExpansion(); return; }
-
-          var scraped = results && results[0] && results[0].result;
-          if (!scraped || !scraped.question) {
-            advanceExpansion();
+          if (chrome.runtime.lastError) {
+            if (retriesLeft > 0) {
+              setTimeout(function () { scrapeWithRetry(tabId, retriesLeft - 1, callback); }, C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS);
+            } else {
+              callback(null);
+            }
             return;
           }
 
-          var skill = { prefix: exp.skillPrefix };
-          var messageText = buildExpansionMessage(skill, scraped);
-
-          // Directly open the Claude tab and wait for it to be ready
-          // before advancing to the next question (ensures tab ordering)
-          queueClaudeTabForExpansion(messageText);
+          var scraped = results && results[0] && results[0].result;
+          if (scraped && scraped.question) {
+            callback(scraped);
+          } else if (retriesLeft > 0) {
+            setTimeout(function () { scrapeWithRetry(tabId, retriesLeft - 1, callback); }, C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS);
+          } else {
+            callback(null);
+          }
         }
       );
     }

@@ -96,8 +96,10 @@ var CONFIG = {
   QUEUE_DRAIN_INTERVAL_MS: 5000, // check queue every 5 seconds
 
   // ── Tab expansion ──
-  EXPANSION_TAB_LOAD_WAIT_MS: 3000, // wait for AMBOSS tab to load before scraping
-  EXPANSION_OVERHEAD_PER_QUESTION_MS: 10000, // ~10s overhead per question for time estimate
+  EXPANSION_INITIAL_WAIT_MS: 3000, // initial wait after tab reports "complete"
+  EXPANSION_SCRAPE_RETRY_INTERVAL_MS: 2000, // retry scrape every 2s if content not ready
+  EXPANSION_SCRAPE_MAX_RETRIES: 10, // max retries (total ~23s wait)
+  EXPANSION_OVERHEAD_PER_QUESTION_MS: 15000, // ~15s overhead per question for time estimate
 
   // ── Message types ──
   MSG_SCRAPE_PAGE: "scrape-amboss-page",

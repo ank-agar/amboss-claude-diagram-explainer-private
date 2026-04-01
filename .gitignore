@@ -1,0 +1,3 @@
+# Asset folders from saved HTML pages (large, not needed in repo)
+reference-pages/**/*_files/
+.DS_Store

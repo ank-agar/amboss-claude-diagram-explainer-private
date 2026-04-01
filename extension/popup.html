@@ -20,6 +20,35 @@
     <!-- Skill buttons -->
     <div id="skill-buttons"></div>
 
+    <!-- Tab Expansion (hidden until session detected) -->
+    <div id="expansion-panel" class="hidden">
+      <div id="expansion-header">Batch Generate</div>
+      <div id="expansion-range">
+        <label>
+          <span>From Q</span>
+          <select id="expand-start"></select>
+        </label>
+        <label>
+          <span>To</span>
+          <select id="expand-end"></select>
+        </label>
+      </div>
+      <div id="expansion-estimate"></div>
+      <button class="skill-btn" id="expand-btn" disabled>
+        <span class="skill-icon">&#x1F4DA;</span>
+        <span class="skill-content">
+          <span class="skill-label" id="expand-btn-label">Generate All</span>
+          <span class="skill-hint" id="expand-btn-hint">Select a skill first</span>
+        </span>
+      </button>
+      <div id="expansion-skill-select">
+        <label>
+          <span>Skill:</span>
+          <select id="expand-skill"></select>
+        </label>
+      </div>
+    </div>
+
     <!-- Settings -->
     <div id="settings">
       <label class="toggle-row">

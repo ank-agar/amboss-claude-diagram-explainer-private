@@ -95,11 +95,18 @@ var CONFIG = {
   QUEUE_COOLDOWN_MS: 330000, // 5.5 minutes -- wait after hitting the limit before sending next batch
   QUEUE_DRAIN_INTERVAL_MS: 5000, // check queue every 5 seconds
 
+  // ── Tab expansion ──
+  EXPANSION_TAB_LOAD_WAIT_MS: 3000, // wait for AMBOSS tab to load before scraping
+  EXPANSION_OVERHEAD_PER_QUESTION_MS: 10000, // ~10s overhead per question for time estimate
+
   // ── Message types ──
   MSG_SCRAPE_PAGE: "scrape-amboss-page",
   MSG_INJECT_AND_SUBMIT: "inject-and-submit",
   MSG_OPEN_AND_INJECT: "open-claude-and-inject",
   MSG_GET_QUEUE_STATUS: "get-queue-status",
+  MSG_START_EXPANSION: "start-tab-expansion",
+  MSG_GET_EXPANSION_STATUS: "get-expansion-status",
+  MSG_STOP_EXPANSION: "stop-expansion",
 
   // ── Storage keys (queue) ──
   STORAGE_KEY_SEND_TIMESTAMPS: "sendTimestamps",

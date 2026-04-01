@@ -251,6 +251,168 @@
     );
   }
 
+  // ── Tab Expansion ──
+  var expansionPanel = document.getElementById("expansion-panel");
+  var expandStart = document.getElementById("expand-start");
+  var expandEnd = document.getElementById("expand-end");
+  var expandSkill = document.getElementById("expand-skill");
+  var expandBtn = document.getElementById("expand-btn");
+  var expandBtnLabel = document.getElementById("expand-btn-label");
+  var expandBtnHint = document.getElementById("expand-btn-hint");
+  var expansionEstimate = document.getElementById("expansion-estimate");
+
+  var sessionInfo = null; // { baseUrl, sessionTotal, questionNum, isReview }
+
+  function initExpansionPanel(scraped) {
+    if (!scraped.sessionTotal || !scraped.baseUrl || scraped.sessionTotal <= 1) return;
+
+    sessionInfo = {
+      baseUrl: scraped.baseUrl,
+      sessionTotal: scraped.sessionTotal,
+      questionNum: parseInt(scraped.questionNum, 10),
+      isReview: scraped.isReview,
+    };
+
+    // Populate start dropdown
+    expandStart.innerHTML = "";
+    for (var i = 1; i <= sessionInfo.sessionTotal; i++) {
+      var opt = document.createElement("option");
+      opt.value = i;
+      opt.textContent = i;
+      if (i === sessionInfo.questionNum) opt.selected = true;
+      expandStart.appendChild(opt);
+    }
+
+    // Populate end dropdown (includes "To end" option)
+    expandEnd.innerHTML = "";
+    var endAll = document.createElement("option");
+    endAll.value = "end";
+    endAll.textContent = "End (" + sessionInfo.sessionTotal + ")";
+    endAll.selected = true;
+    expandEnd.appendChild(endAll);
+    for (var j = 1; j <= sessionInfo.sessionTotal; j++) {
+      var opt2 = document.createElement("option");
+      opt2.value = j;
+      opt2.textContent = j;
+      expandEnd.appendChild(opt2);
+    }
+
+    // Populate skill dropdown
+    expandSkill.innerHTML = "";
+    C.SKILLS.forEach(function (skill) {
+      var opt3 = document.createElement("option");
+      opt3.value = skill.id;
+      opt3.textContent = skill.label;
+      expandSkill.appendChild(opt3);
+    });
+
+    updateExpansionEstimate();
+    expandBtn.disabled = false;
+    expandBtnHint.textContent = "Opens each question + Claude tab in order";
+    expansionPanel.classList.remove("hidden");
+
+    // Warn if not review page
+    if (!sessionInfo.isReview) {
+      expandBtnHint.textContent = "Warning: not a review page. Unanswered questions may lack explanations.";
+    }
+
+    expandStart.addEventListener("change", updateExpansionEstimate);
+    expandEnd.addEventListener("change", updateExpansionEstimate);
+
+    expandBtn.addEventListener("click", function () {
+      if (!sessionInfo) return;
+
+      var startQ = parseInt(expandStart.value, 10);
+      var endQ = expandEnd.value === "end" ? sessionInfo.sessionTotal : parseInt(expandEnd.value, 10);
+
+      if (endQ < startQ) {
+        setStatus("err", "End question must be >= start");
+        return;
+      }
+
+      var selectedSkill = C.SKILLS.find(function (s) { return s.id === expandSkill.value; });
+      if (!selectedSkill) return;
+
+      setStatus("ok", "Starting batch generation...");
+      expandBtn.disabled = true;
+
+      chrome.runtime.sendMessage({
+        type: C.MSG_START_EXPANSION,
+        baseUrl: sessionInfo.baseUrl,
+        startQ: startQ,
+        endQ: endQ,
+        skillId: selectedSkill.id,
+        skillPrefix: selectedSkill.prefix,
+        openInBackground: toggleBackground.checked,
+      }, function (response) {
+        if (chrome.runtime.lastError) return;
+        if (response && response.success) {
+          setStatus("ok", response.message || "Expansion started!");
+          setTimeout(function () { window.close(); }, C.POPUP_AUTO_CLOSE_DELAY_MS);
+        } else {
+          setStatus("err", (response && response.error) || "Failed to start");
+          expandBtn.disabled = false;
+        }
+      });
+    });
+  }
+
+  function updateExpansionEstimate() {
+    if (!sessionInfo) return;
+
+    var startQ = parseInt(expandStart.value, 10);
+    var endQ = expandEnd.value === "end" ? sessionInfo.sessionTotal : parseInt(expandEnd.value, 10);
+    var count = Math.max(0, endQ - startQ + 1);
+
+    if (count <= 0) {
+      expansionEstimate.textContent = "";
+      expandBtnLabel.textContent = "Generate All";
+      return;
+    }
+
+    expandBtnLabel.textContent = "Generate " + count + " Question" + (count > 1 ? "s" : "");
+
+    // Time estimate: first 3 are immediate, then batches of 3 with cooldown
+    chrome.runtime.sendMessage({ type: C.MSG_GET_QUEUE_STATUS }, function (status) {
+      var cooldownMs = (status && status.cooldownMs) || C.QUEUE_COOLDOWN_MS;
+      var batches = Math.ceil(count / C.MAX_CONCURRENT_REQUESTS);
+      var overheadMs = count * C.EXPANSION_OVERHEAD_PER_QUESTION_MS;
+      var cooldownTotal = Math.max(0, batches - 1) * cooldownMs;
+      var totalMs = overheadMs + cooldownTotal;
+
+      var totalMin = Math.ceil(totalMs / 60000);
+      if (totalMin < 1) totalMin = 1;
+
+      var finishTime = new Date(Date.now() + totalMs);
+      var finishStr = finishTime.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+      expansionEstimate.textContent = "~" + totalMin + " min total. Done by ~" + finishStr + ".";
+    });
+  }
+
+  // After scraping in detectAmbossTab, also init the expansion panel
+  function tryScrapeForExpansion() {
+    if (!ambossTabId) return;
+    chrome.scripting.executeScript(
+      { target: { tabId: ambossTabId }, files: ["config.js"] },
+      function () {
+        if (chrome.runtime.lastError) return;
+        chrome.scripting.executeScript(
+          { target: { tabId: ambossTabId }, files: ["scraper.js"] },
+          function (results) {
+            if (chrome.runtime.lastError) return;
+            var data = results && results[0] && results[0].result;
+            if (data && data.sessionTotal) {
+              initExpansionPanel(data);
+            }
+          }
+        );
+      }
+    );
+  }
+
   // ── Start ──
   init();
+  // Scrape for expansion panel after a small delay (let popup render first)
+  setTimeout(tryScrapeForExpansion, 200);
 })();

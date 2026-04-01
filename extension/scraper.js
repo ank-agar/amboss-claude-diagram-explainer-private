@@ -32,15 +32,34 @@
     url: window.location.href,
     questionId: null,
     questionNum: null,
+    sessionId: null,
+    sessionTotal: null,
+    isReview: false,
+    baseUrl: null,
   };
 
-  // Parse URL for question ID
+  // Parse URL for question ID and session info
   var urlMatch = window.location.href.match(
     C.AMBOSS_URL_PATTERN || /next\.amboss\.com\/([a-z]{2})\/(?:questions|review)\/([^/]+)\/(\d+)/
   );
   if (urlMatch) {
     result.questionId = urlMatch[2] + ":" + urlMatch[3];
     result.questionNum = urlMatch[3];
+    result.sessionId = urlMatch[2];
+    result.isReview = window.location.href.includes("/review/");
+    // Base URL for constructing other question URLs in this session
+    var urlType = result.isReview ? "review" : "questions";
+    result.baseUrl = "https://next.amboss.com/" + urlMatch[1] + "/" + urlType + "/" + urlMatch[2] + "/";
+  }
+
+  // Session total from the question counter (e.g. "3/16")
+  var counterEl = document.querySelector('[data-e2e-test-id="sessionQuestionCount"]');
+  if (counterEl) {
+    var counterText = counterEl.textContent.trim();
+    var counterMatch = counterText.match(/(\d+)\s*\/\s*(\d+)/);
+    if (counterMatch) {
+      result.sessionTotal = parseInt(counterMatch[2], 10);
+    }
   }
 
   // Question text

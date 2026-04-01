@@ -9,6 +9,7 @@
  */
 
 importScripts("config.js");
+importScripts("template-engine.js");
 
 var C = CONFIG;
 var ALARM_NAME = "drain-queue";
@@ -200,5 +201,200 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     return true;
   }
 
+  // ── Tab Expansion: start batch generation ──
+  if (msg.type === C.MSG_START_EXPANSION) {
+    var expansion = {
+      baseUrl: msg.baseUrl,
+      startQ: msg.startQ,
+      endQ: msg.endQ,
+      currentQ: msg.startQ,
+      skillPrefix: msg.skillPrefix,
+      skillId: msg.skillId,
+      openInBackground: !!msg.openInBackground,
+      running: true,
+    };
+
+    chrome.storage.local.set({ expansion: expansion }, function () {
+      var count = expansion.endQ - expansion.startQ + 1;
+      sendResponse({
+        success: true,
+        message: "Expanding " + count + " questions (Q" + expansion.startQ + "-Q" + expansion.endQ + ")...",
+      });
+      processNextExpansionQuestion();
+    });
+    return true;
+  }
+
+  if (msg.type === C.MSG_GET_EXPANSION_STATUS) {
+    chrome.storage.local.get(["expansion"], function (result) {
+      var exp = result.expansion;
+      if (!exp || !exp.running) {
+        sendResponse({ running: false });
+      } else {
+        sendResponse({
+          running: true,
+          currentQ: exp.currentQ,
+          endQ: exp.endQ,
+          startQ: exp.startQ,
+          total: exp.endQ - exp.startQ + 1,
+          done: exp.currentQ - exp.startQ,
+        });
+      }
+    });
+    return true;
+  }
+
+  if (msg.type === C.MSG_STOP_EXPANSION) {
+    chrome.storage.local.get(["expansion"], function (result) {
+      if (result.expansion) {
+        result.expansion.running = false;
+        chrome.storage.local.set({ expansion: result.expansion });
+      }
+      chrome.alarms.clear("expansion-next");
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+
   return false;
 });
+
+// ── Tab Expansion: process one question at a time ──
+
+var EXPANSION_ALARM = "expansion-next";
+
+chrome.alarms.onAlarm.addListener(function (alarm) {
+  if (alarm.name === EXPANSION_ALARM) {
+    processNextExpansionQuestion();
+  }
+});
+
+function processNextExpansionQuestion() {
+  chrome.storage.local.get(["expansion"], function (result) {
+    var exp = result.expansion;
+    if (!exp || !exp.running || exp.currentQ > exp.endQ) {
+      // Done
+      if (exp) {
+        exp.running = false;
+        chrome.storage.local.set({ expansion: exp });
+      }
+      return;
+    }
+
+    var questionUrl = exp.baseUrl + exp.currentQ;
+    var questionNum = exp.currentQ;
+
+    // Step 1: Open the AMBOSS question tab
+    chrome.tabs.create(
+      { url: questionUrl, active: false },
+      function (ambossTab) {
+        if (chrome.runtime.lastError) {
+          scheduleNextExpansion();
+          return;
+        }
+
+        // Step 2: Wait for it to load
+        var done = false;
+        var timeoutId = setTimeout(function () {
+          if (done) return;
+          done = true;
+          chrome.tabs.onUpdated.removeListener(listener);
+          // Skip this question, move on
+          advanceExpansion();
+        }, C.TAB_LOAD_TIMEOUT_MS);
+
+        var listener = function (tabId, changeInfo) {
+          if (tabId !== ambossTab.id || changeInfo.status !== "complete") return;
+          if (done) return;
+          done = true;
+          clearTimeout(timeoutId);
+          chrome.tabs.onUpdated.removeListener(listener);
+
+          // Step 3: Wait a bit for page JS, then scrape
+          setTimeout(function () {
+            scrapeAndSendForExpansion(ambossTab.id, exp, questionNum);
+          }, C.EXPANSION_TAB_LOAD_WAIT_MS);
+        };
+
+        chrome.tabs.onUpdated.addListener(listener);
+      }
+    );
+  });
+}
+
+function scrapeAndSendForExpansion(tabId, exp, questionNum) {
+  // Inject config then scraper
+  chrome.scripting.executeScript(
+    { target: { tabId: tabId }, files: ["config.js"] },
+    function () {
+      if (chrome.runtime.lastError) { advanceExpansion(); return; }
+
+      chrome.scripting.executeScript(
+        { target: { tabId: tabId }, files: ["scraper.js"] },
+        function (results) {
+          if (chrome.runtime.lastError) { advanceExpansion(); return; }
+
+          var scraped = results && results[0] && results[0].result;
+          if (!scraped || !scraped.question) {
+            advanceExpansion();
+            return;
+          }
+
+          // Build message using template engine (loaded inline since we're in SW)
+          var skill = { prefix: exp.skillPrefix };
+          var messageText = buildExpansionMessage(skill, scraped);
+
+          // Queue the Claude send through the existing rate-limited system
+          chrome.runtime.sendMessage({
+            type: C.MSG_OPEN_AND_INJECT,
+            text: messageText,
+            openInBackground: true,
+          }, function () {
+            // Claude tab is queued/sent. Advance to next question.
+            advanceExpansion();
+          });
+        }
+      );
+    }
+  );
+}
+
+function buildExpansionMessage(skill, scraped) {
+  // Use the template engine with default templates
+  // (custom templates could be loaded from storage if needed)
+  return TemplateEngine.buildMessage(
+    skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE
+  );
+}
+
+function advanceExpansion() {
+  chrome.storage.local.get(["expansion"], function (result) {
+    var exp = result.expansion;
+    if (!exp || !exp.running) return;
+
+    exp.currentQ++;
+    chrome.storage.local.set({ expansion: exp }, function () {
+      if (exp.currentQ > exp.endQ) {
+        exp.running = false;
+        chrome.storage.local.set({ expansion: exp });
+        return;
+      }
+
+      // Check if we need to wait for a queue slot before processing next
+      loadState(function (queue, timestamps, cooldownMs) {
+        timestamps = pruneStaleSendTimestamps(timestamps, cooldownMs);
+        var slotsAvailable = C.MAX_CONCURRENT_REQUESTS - timestamps.length - queue.length;
+
+        if (slotsAvailable > 0) {
+          // Slot available, process immediately
+          processNextExpansionQuestion();
+        } else {
+          // Wait for a slot to open, then continue
+          var delayMs = getNextSlotDelayMs(timestamps, cooldownMs);
+          var delayMin = Math.max(delayMs / 60000, 0.5);
+          chrome.alarms.create(EXPANSION_ALARM, { delayInMinutes: delayMin });
+        }
+      });
+    });
+  });
+}

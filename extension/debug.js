@@ -203,7 +203,7 @@
         var msg = buildMessageTextDebug(skill.prefix, data);
         log("Preview", "Skill: " + skill.label, "info");
         log("Preview", "Total length: " + msg.length + " chars", "info");
-        log("Preview", truncate(msg, 2000), "data");
+        log("Preview", truncate(msg, 5000), "data");
       });
     },
 
@@ -215,7 +215,7 @@
         var msg = buildMessageTextDebug(skill.prefix, data);
         log("Preview", "Skill: " + skill.label, "info");
         log("Preview", "Total length: " + msg.length + " chars", "info");
-        log("Preview", truncate(msg, 2000), "data");
+        log("Preview", truncate(msg, 5000), "data");
       });
     },
 

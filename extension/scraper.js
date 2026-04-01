@@ -75,11 +75,14 @@
     C.AMBOSS_USER_WRONG_CHOICE_SELECTOR || '[data-e2e-test-id="answer-theme-userFirstAttemptIncorrect"]'
   );
   if (wrongChoiceWrapper) {
-    var wrongBtn = wrongChoiceWrapper.querySelector(answerPrefix.replace('[', '').replace('"]', '').replace('data-e2e-test-id=', '[data-e2e-test-id^=') + '"]');
-    if (!wrongBtn) {
-      // Simpler: just find any answer button inside the wrapper
-      wrongBtn = wrongChoiceWrapper.querySelector('[data-e2e-test-id^="answer-"]');
-    }
+    // Find the actual answer button (answer-a through answer-f), not answer-row or other elements
+    var wrongBtn = null;
+    letters.forEach(function (letter) {
+      if (!wrongBtn) {
+        var candidate = wrongChoiceWrapper.querySelector(answerPrefix + letter + '"]');
+        if (candidate) wrongBtn = candidate;
+      }
+    });
     if (wrongBtn) {
       var wrongLetter = (wrongBtn.getAttribute("data-e2e-test-id") || "").replace("answer-", "").toUpperCase();
       var wrongTextEl = wrongBtn.querySelector(answerContentSel);

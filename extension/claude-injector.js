@@ -202,26 +202,9 @@
       return false;
     }
 
-    var delayMs = msg.delaySubmitMs || 0;
-
-    if (delayMs > 0) {
-      // Paste immediately, schedule submit after delay
-      waitForElement(INPUT_SEL)
-        .then(function (inputEl) { return injectText(inputEl, msg.text); })
-        .then(function () {
-          sendResponse({ success: true, method: "delayed-submit", delayMs: delayMs });
-          setTimeout(function () {
-            clickSendWithRetry(SEND_RETRIES);
-          }, delayMs);
-        })
-        .catch(function (err) {
-          sendResponse({ success: false, error: err.message });
-        });
-    } else {
-      injectAndSubmit(msg.text).then(function (result) {
-        sendResponse(result);
-      });
-    }
+    injectAndSubmit(msg.text).then(function (result) {
+      sendResponse(result);
+    });
     return true; // async response
   });
 })();

@@ -74,6 +74,7 @@ var CONFIG = {
   // ── Storage keys ──
   STORAGE_KEY_SELECTED_SKILL: "selectedSkill",
   STORAGE_KEY_OPEN_IN_BACKGROUND: "openInBackground",
+  STORAGE_KEY_COOLDOWN_MS: "cooldownMs",
   STORAGE_KEY_PROMPT_TEMPLATE: "promptTemplate",
   STORAGE_KEY_WRONG_CHOICE_TEMPLATE: "wrongChoiceTemplate",
 
@@ -89,10 +90,19 @@ var CONFIG = {
   CLAUDE_SEND_RETRY_INTERVAL_MS: 500,
   TAB_LOAD_TIMEOUT_MS: 30000,
 
+  // ── Rate limiting / queue ──
+  MAX_CONCURRENT_REQUESTS: 3,
+  QUEUE_COOLDOWN_MS: 330000, // 5.5 minutes -- wait after hitting the limit before sending next batch
+  QUEUE_DRAIN_INTERVAL_MS: 5000, // check queue every 5 seconds
+
   // ── Message types ──
   MSG_SCRAPE_PAGE: "scrape-amboss-page",
   MSG_INJECT_AND_SUBMIT: "inject-and-submit",
   MSG_OPEN_AND_INJECT: "open-claude-and-inject",
+  MSG_GET_QUEUE_STATUS: "get-queue-status",
+
+  // ── Storage keys (queue) ──
+  STORAGE_KEY_SEND_TIMESTAMPS: "sendTimestamps",
 };
 
 // Make available in both module and script contexts

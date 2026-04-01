@@ -257,6 +257,25 @@ header h1 {
   background: #fff;
 }
 
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 6px 0;
+}
+
+.setting-row select {
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 /* ── Footer ── */
 #footer {
   text-align: center;

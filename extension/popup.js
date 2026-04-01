@@ -16,6 +16,7 @@
   var statusText = document.getElementById("status-text");
   var skillButtonsContainer = document.getElementById("skill-buttons");
   var toggleBackground = document.getElementById("toggle-background");
+  var selectCooldown = document.getElementById("select-cooldown");
   var openDebugLink = document.getElementById("open-debug");
 
   // ── State ──
@@ -33,13 +34,16 @@
   // ── Settings ──
   function loadSettings() {
     chrome.storage.local.get(
-      [C.STORAGE_KEY_OPEN_IN_BACKGROUND],
+      [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS],
       function (result) {
         if (chrome.runtime.lastError) return;
         toggleBackground.checked =
           result[C.STORAGE_KEY_OPEN_IN_BACKGROUND] !== undefined
             ? result[C.STORAGE_KEY_OPEN_IN_BACKGROUND]
             : C.DEFAULT_OPEN_IN_BACKGROUND;
+        if (result[C.STORAGE_KEY_COOLDOWN_MS]) {
+          selectCooldown.value = String(result[C.STORAGE_KEY_COOLDOWN_MS]);
+        }
       }
     );
   }
@@ -48,6 +52,12 @@
     toggleBackground.addEventListener("change", function () {
       var obj = {};
       obj[C.STORAGE_KEY_OPEN_IN_BACKGROUND] = toggleBackground.checked;
+      chrome.storage.local.set(obj);
+    });
+
+    selectCooldown.addEventListener("change", function () {
+      var obj = {};
+      obj[C.STORAGE_KEY_COOLDOWN_MS] = parseInt(selectCooldown.value, 10);
       chrome.storage.local.set(obj);
     });
 
@@ -119,8 +129,19 @@
       if (match) {
         ambossTabId = tab.id;
         isAmbossPage = true;
-        setStatus("ok", "AMBOSS Q" + match[3] + " detected");
-        setButtonsEnabled(true);
+
+        // Check queue status and show it
+        chrome.runtime.sendMessage({ type: C.MSG_GET_QUEUE_STATUS }, function (status) {
+          if (chrome.runtime.lastError || !status) {
+            setStatus("ok", "AMBOSS Q" + match[3] + " detected");
+          } else if (status.queueLength > 0) {
+            var waitMin = Math.ceil(status.nextSlotInMs / 60000);
+            setStatus("ok", "Q" + match[3] + " | " + status.queueLength + " queued, next in ~" + waitMin + "m");
+          } else {
+            setStatus("ok", "AMBOSS Q" + match[3] + " detected");
+          }
+          setButtonsEnabled(true);
+        });
       } else {
         setStatus("warn", "Not on an AMBOSS question page");
         setButtonsEnabled(false);
@@ -184,7 +205,11 @@
               function (response) {
                 if (chrome.runtime.lastError) return;
                 if (response && response.success) {
-                  setStatus("ok", "Sent to Claude!");
+                  if (response.queued) {
+                    setStatus("ok", response.message);
+                  } else {
+                    setStatus("ok", "Sending now...");
+                  }
                   setTimeout(function () { window.close(); }, C.POPUP_AUTO_CLOSE_DELAY_MS);
                 } else if (response) {
                   setStatus("err", response.error || "Unknown error");

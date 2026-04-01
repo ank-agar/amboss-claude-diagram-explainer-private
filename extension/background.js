@@ -2,8 +2,8 @@
  * background.js -- Background service worker
  * Context: Background (persists via alarms, survives restarts)
  * Design: Rate-limits sends to respect Claude.ai's 3 concurrent limit.
- *         All timing uses chrome.alarms (never setTimeout for delays >5s)
- *         because service workers get killed after ~30s of inactivity.
+ *         Expansion uses an alarm-driven state machine with a "busy"
+ *         guard to prevent race conditions from overlapping ticks.
  */
 
 importScripts("config.js");
@@ -13,247 +13,182 @@ var C = CONFIG;
 var QUEUE_ALARM = "drain-queue";
 var EXPANSION_ALARM = "expansion-tick";
 
-// ── State (always loaded from storage, never trusted in memory) ──
+// ── State (always from storage) ──
 
 function loadState(callback) {
   chrome.storage.local.get(
     ["sendQueue", "sendTimestamps", C.STORAGE_KEY_COOLDOWN_MS],
     function (result) {
-      if (chrome.runtime.lastError) {
-        callback([], [], C.QUEUE_COOLDOWN_MS);
-        return;
-      }
-      callback(
-        result.sendQueue || [],
-        result.sendTimestamps || [],
-        result[C.STORAGE_KEY_COOLDOWN_MS] || C.QUEUE_COOLDOWN_MS
-      );
+      if (chrome.runtime.lastError) { callback([], [], C.QUEUE_COOLDOWN_MS); return; }
+      callback(result.sendQueue || [], result.sendTimestamps || [], result[C.STORAGE_KEY_COOLDOWN_MS] || C.QUEUE_COOLDOWN_MS);
     }
   );
 }
 
-function saveState(queue, timestamps, callback) {
-  chrome.storage.local.set(
-    { sendQueue: queue, sendTimestamps: timestamps },
-    callback || function () {}
-  );
+function saveState(queue, timestamps, cb) {
+  chrome.storage.local.set({ sendQueue: queue, sendTimestamps: timestamps }, cb || function () {});
 }
 
 // ── Rate limiting ──
 
-function pruneTimestamps(timestamps, cooldownMs) {
-  var cutoff = Date.now() - cooldownMs;
-  return timestamps.filter(function (ts) { return ts > cutoff; });
+function pruneTimestamps(ts, cooldown) {
+  var cutoff = Date.now() - cooldown;
+  return ts.filter(function (t) { return t > cutoff; });
 }
 
-function getNextSlotDelayMs(timestamps, cooldownMs) {
-  var pruned = pruneTimestamps(timestamps, cooldownMs);
+function getNextSlotDelayMs(ts, cooldown) {
+  var pruned = pruneTimestamps(ts, cooldown);
   if (pruned.length < C.MAX_CONCURRENT_REQUESTS) return 0;
   pruned.sort(function (a, b) { return a - b; });
-  return Math.max(0, pruned[0] + cooldownMs - Date.now());
+  return Math.max(0, pruned[0] + cooldown - Date.now());
 }
 
-// ── Open Claude tab, inject, call back when done ──
+// ── Open Claude tab ──
 
-function openClaudeTab(messageText, openInBackground, callback) {
-  chrome.tabs.create(
-    { url: C.CLAUDE_NEW_CHAT_URL, active: !openInBackground },
-    function (newTab) {
-      if (chrome.runtime.lastError) {
-        if (callback) callback(null);
-        return;
-      }
+function openClaudeTab(text, inBackground, callback) {
+  chrome.tabs.create({ url: C.CLAUDE_NEW_CHAT_URL, active: !inBackground }, function (tab) {
+    if (chrome.runtime.lastError) { if (callback) callback(null); return; }
+    var tabId = tab.id;
+    var done = false;
 
-      var tabId = newTab.id;
-      var done = false;
+    var timeout = setTimeout(function () {
+      if (done) return; done = true;
+      chrome.tabs.onUpdated.removeListener(onLoad);
+      if (callback) callback(tabId);
+    }, C.TAB_LOAD_TIMEOUT_MS);
 
-      var timeoutId = setTimeout(function () {
-        if (done) return;
-        done = true;
-        chrome.tabs.onUpdated.removeListener(loadListener);
+    var onLoad = function (id, info) {
+      if (id !== tabId || info.status !== "complete") return;
+      if (done) return; done = true;
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onLoad);
+      setTimeout(function () {
+        chrome.tabs.sendMessage(tabId, { type: C.MSG_INJECT_AND_SUBMIT, text: text });
         if (callback) callback(tabId);
-      }, C.TAB_LOAD_TIMEOUT_MS);
-
-      var loadListener = function (updatedTabId, changeInfo) {
-        if (updatedTabId !== tabId || changeInfo.status !== "complete") return;
-        if (done) return;
-        done = true;
-        clearTimeout(timeoutId);
-        chrome.tabs.onUpdated.removeListener(loadListener);
-
-        setTimeout(function () {
-          chrome.tabs.sendMessage(tabId, {
-            type: C.MSG_INJECT_AND_SUBMIT,
-            text: messageText,
-          });
-          if (callback) callback(tabId);
-        }, C.CLAUDE_INJECT_DELAY_MS);
-      };
-
-      chrome.tabs.onUpdated.addListener(loadListener);
-    }
-  );
+      }, C.CLAUDE_INJECT_DELAY_MS);
+    };
+    chrome.tabs.onUpdated.addListener(onLoad);
+  });
 }
 
-// ── Queue: drain via alarm ──
+// ── Queue drain ──
 
 function drainQueue() {
-  loadState(function (queue, timestamps, cooldownMs) {
-    timestamps = pruneTimestamps(timestamps, cooldownMs);
+  loadState(function (queue, ts, cooldown) {
+    ts = pruneTimestamps(ts, cooldown);
+    if (queue.length === 0) { saveState(queue, ts); chrome.alarms.clear(QUEUE_ALARM); return; }
 
-    if (queue.length === 0) {
-      saveState(queue, timestamps);
-      chrome.alarms.clear(QUEUE_ALARM);
-      return;
-    }
-
-    var slotsAvailable = C.MAX_CONCURRENT_REQUESTS - timestamps.length;
-    var sent = 0;
-
-    while (queue.length > 0 && sent < slotsAvailable) {
+    var slots = C.MAX_CONCURRENT_REQUESTS - ts.length;
+    while (queue.length > 0 && slots > 0) {
       var item = queue.shift();
-      timestamps.push(Date.now());
+      ts.push(Date.now());
+      slots--;
       if (item.isExpansion) {
         openClaudeTab(item.text, true, function () {
-          advanceExpansion();
+          // Expansion item sent -- unblock the expansion state machine
+          setExpansionPhase("open-amboss-next");
         });
       } else {
         openClaudeTab(item.text, item.openInBackground);
       }
-      sent++;
     }
 
-    saveState(queue, timestamps, function () {
+    saveState(queue, ts, function () {
       if (queue.length > 0) {
-        var delayMs = getNextSlotDelayMs(timestamps, cooldownMs);
-        var delayMin = Math.max(delayMs / 60000, 0.5);
-        chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: delayMin });
+        var delay = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
+        chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: delay });
       }
     });
   });
 }
 
-// ── Alarm listeners ──
+// ── Alarms ──
 
 chrome.alarms.onAlarm.addListener(function (alarm) {
   if (alarm.name === QUEUE_ALARM) drainQueue();
   if (alarm.name === EXPANSION_ALARM) {
-    // Safety net: restart the fast tick loop if it died
-    expansionLoopActive = false;
-    expansionTickLoop();
+    expansionLoopRunning = false;
+    runExpansionLoop();
   }
 });
 
-// Drain on startup in case items were left
-drainQueue();
+drainQueue(); // on startup
 
-// ── Message handler ──
+// ── Messages ──
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
-  // Single question send
   if (msg.type === C.MSG_OPEN_AND_INJECT) {
     if (!msg.text || typeof msg.text !== "string") {
-      sendResponse({ success: false, error: "Missing message text" });
-      return false;
+      sendResponse({ success: false, error: "Missing message text" }); return false;
     }
-
-    loadState(function (queue, timestamps, cooldownMs) {
-      timestamps = pruneTimestamps(timestamps, cooldownMs);
-
-      if (timestamps.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
-        timestamps.push(Date.now());
-        saveState(queue, timestamps);
+    loadState(function (queue, ts, cooldown) {
+      ts = pruneTimestamps(ts, cooldown);
+      if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
+        ts.push(Date.now());
+        saveState(queue, ts);
         openClaudeTab(msg.text, !!msg.openInBackground);
         sendResponse({ success: true, queued: false, message: "Sending now..." });
       } else {
         queue.push({ text: msg.text, openInBackground: !!msg.openInBackground, addedAt: Date.now() });
-        saveState(queue, timestamps, function () {
-          var delayMs = getNextSlotDelayMs(timestamps, cooldownMs);
-          var delayMin = Math.max(delayMs / 60000, 0.5);
-          chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: delayMin });
+        saveState(queue, ts, function () {
+          var d = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
+          chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: d });
         });
-        var waitMin = Math.ceil(getNextSlotDelayMs(timestamps, cooldownMs) / 60000);
-        sendResponse({ success: true, queued: true, position: queue.length, message: "Queued (#" + queue.length + "). Sends in ~" + waitMin + " min." });
+        sendResponse({ success: true, queued: true, position: queue.length,
+          message: "Queued (#" + queue.length + "). Sends in ~" + Math.ceil(getNextSlotDelayMs(ts, cooldown) / 60000) + " min." });
       }
     });
     return true;
   }
 
-  // Queue status
   if (msg.type === C.MSG_GET_QUEUE_STATUS) {
-    loadState(function (queue, timestamps, cooldownMs) {
-      timestamps = pruneTimestamps(timestamps, cooldownMs);
+    loadState(function (queue, ts, cooldown) {
+      ts = pruneTimestamps(ts, cooldown);
       sendResponse({
-        queueLength: queue.length,
-        recentSends: timestamps.length,
+        queueLength: queue.length, recentSends: ts.length,
         maxConcurrent: C.MAX_CONCURRENT_REQUESTS,
-        canSendNow: timestamps.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0,
-        nextSlotInMs: getNextSlotDelayMs(timestamps, cooldownMs),
-        cooldownMs: cooldownMs,
+        canSendNow: ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0,
+        nextSlotInMs: getNextSlotDelayMs(ts, cooldown), cooldownMs: cooldown,
       });
     });
     return true;
   }
 
-  // ── Tab Expansion ──
-
-  if (msg.type === C.MSG_START_EXPANSION) {
-    var exp = {
-      baseUrl: msg.baseUrl,
-      startQ: msg.startQ,
-      endQ: msg.endQ,
-      currentQ: msg.startQ,
-      skillPrefix: msg.skillPrefix,
-      openInBackground: !!msg.openInBackground,
-      running: true,
-      // State machine: "open-amboss" | "wait-scrape" | "wait-claude-slot" | "open-claude"
-      phase: "open-amboss",
-      ambossTabId: null,
-      scrapeAttempts: 0,
-      messageText: null,
-    };
-
-    // Clear any stale send timestamps before starting expansion
-    chrome.storage.local.set({ expansion: exp, sendTimestamps: [] }, function () {
-      var count = exp.endQ - exp.startQ + 1;
-      sendResponse({ success: true, message: "Expanding " + count + " questions..." });
-      // Chrome alarms minimum is 0.5 min. Use that, but also tick immediately
-      // and keep worker alive with self-messaging during active expansion.
-      chrome.alarms.create(EXPANSION_ALARM, { periodInMinutes: 0.5 });
-      expansionTickLoop();
-    });
-    return true;
-  }
-
-  if (msg.type === C.MSG_GET_EXPANSION_STATUS) {
-    chrome.storage.local.get(["expansion"], function (result) {
-      var exp = result.expansion;
-      sendResponse(exp && exp.running
-        ? { running: true, currentQ: exp.currentQ, endQ: exp.endQ, startQ: exp.startQ, phase: exp.phase }
-        : { running: false });
-    });
-    return true;
-  }
-
-  // Reset all queue/expansion state (for debugging)
   if (msg.type === "reset-all-state") {
-    chrome.storage.local.set({
-      sendQueue: [],
-      sendTimestamps: [],
-      expansion: null,
-    }, function () {
+    chrome.storage.local.set({ sendQueue: [], sendTimestamps: [], expansion: null }, function () {
       chrome.alarms.clearAll();
       sendResponse({ success: true });
     });
     return true;
   }
 
-  if (msg.type === C.MSG_STOP_EXPANSION) {
+  // ── Expansion messages ──
+
+  if (msg.type === C.MSG_START_EXPANSION) {
+    var exp = {
+      baseUrl: msg.baseUrl, startQ: msg.startQ, endQ: msg.endQ,
+      currentQ: msg.startQ, skillPrefix: msg.skillPrefix,
+      openInBackground: !!msg.openInBackground, running: true,
+      phase: "open-amboss", ambossTabId: null, scrapeAttempts: 0, messageText: null,
+    };
+    chrome.storage.local.set({ expansion: exp, sendTimestamps: [] }, function () {
+      sendResponse({ success: true, message: "Expanding " + (exp.endQ - exp.startQ + 1) + " questions..." });
+      chrome.alarms.create(EXPANSION_ALARM, { periodInMinutes: 0.5 });
+      runExpansionLoop();
+    });
+    return true;
+  }
+
+  if (msg.type === C.MSG_GET_EXPANSION_STATUS) {
     chrome.storage.local.get(["expansion"], function (result) {
-      if (result.expansion) {
-        result.expansion.running = false;
-        chrome.storage.local.set({ expansion: result.expansion });
-      }
+      var e = result.expansion;
+      sendResponse(e && e.running ? { running: true, currentQ: e.currentQ, endQ: e.endQ, startQ: e.startQ, phase: e.phase } : { running: false });
+    });
+    return true;
+  }
+
+  if (msg.type === C.MSG_STOP_EXPANSION) {
+    setExpansionPhase("stopped", function () {
       chrome.alarms.clear(EXPANSION_ALARM);
       sendResponse({ success: true });
     });
@@ -263,199 +198,217 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   return false;
 });
 
-// ── Expansion tick loop ──
-// Chrome alarms have a 30s minimum period. For faster ticking during active
-// expansion, we use a self-scheduling setTimeout loop. The 30s alarm acts as
-// a safety net to restart the loop if the worker slept and killed the setTimeout.
+// ── Expansion helpers ──
 
-var expansionLoopActive = false;
-
-function expansionTickLoop() {
-  if (expansionLoopActive) return;
-  expansionLoopActive = true;
-  doExpansionLoop();
-}
-
-function doExpansionLoop() {
+function setExpansionPhase(phase, callback) {
   chrome.storage.local.get(["expansion"], function (result) {
     var exp = result.expansion;
-    if (!exp || !exp.running) {
-      expansionLoopActive = false;
-      chrome.alarms.clear(EXPANSION_ALARM);
-      return;
+    if (!exp) { if (callback) callback(); return; }
+    if (phase === "stopped") { exp.running = false; }
+    else if (phase === "open-amboss-next") {
+      // Advance to next question and reset to open-amboss
+      exp.currentQ++;
+      exp.phase = "open-amboss";
+      exp.ambossTabId = null;
+      exp.messageText = null;
+      exp.scrapeAttempts = 0;
+    } else {
+      exp.phase = phase;
     }
-    expansionTick();
-    // Schedule next tick in 3 seconds. If the worker sleeps, the alarm
-    // at 30s will call expansionTickLoop() to restart this.
-    setTimeout(doExpansionLoop, 3000);
+    chrome.storage.local.set({ expansion: exp }, callback || function () {});
   });
 }
 
-// ── Expansion state machine ──
-// Each tick reads the expansion state, does one step, saves, and returns.
+// ── Expansion loop (fast setTimeout with alarm safety net) ──
 
-function expansionTick() {
+var expansionLoopRunning = false;
+
+function runExpansionLoop() {
+  if (expansionLoopRunning) return;
+  expansionLoopRunning = true;
+  expansionStep();
+}
+
+function expansionStep() {
   chrome.storage.local.get(["expansion"], function (result) {
     var exp = result.expansion;
     if (!exp || !exp.running) {
+      expansionLoopRunning = false;
       chrome.alarms.clear(EXPANSION_ALARM);
       return;
     }
-
     if (exp.currentQ > exp.endQ) {
       exp.running = false;
       chrome.storage.local.set({ expansion: exp });
+      expansionLoopRunning = false;
       chrome.alarms.clear(EXPANSION_ALARM);
       return;
     }
 
+    // If phase is "busy", an async operation is in progress. Just wait.
+    if (exp.phase === "busy") {
+      setTimeout(expansionStep, 3000);
+      return;
+    }
+
+    // ── OPEN AMBOSS TAB ──
     if (exp.phase === "open-amboss") {
-      // Open the AMBOSS question tab
-      var url = exp.baseUrl + exp.currentQ;
-      chrome.tabs.create({ url: url, active: false }, function (tab) {
-        if (chrome.runtime.lastError) {
-          // Skip this question
-          exp.currentQ++;
-          chrome.storage.local.set({ expansion: exp });
-          return;
-        }
-        exp.ambossTabId = tab.id;
-        exp.phase = "wait-load";
-        exp.scrapeAttempts = 0;
-        chrome.storage.local.set({ expansion: exp });
-      });
-      return;
-    }
-
-    if (exp.phase === "wait-load") {
-      // Check if the AMBOSS tab has loaded
-      if (!exp.ambossTabId) {
-        exp.phase = "open-amboss";
-        chrome.storage.local.set({ expansion: exp });
-        return;
-      }
-      chrome.tabs.get(exp.ambossTabId, function (tab) {
-        if (chrome.runtime.lastError || !tab) {
-          // Tab gone, skip
-          exp.currentQ++;
-          exp.phase = "open-amboss";
-          chrome.storage.local.set({ expansion: exp });
-          return;
-        }
-        if (tab.status === "complete") {
-          exp.phase = "scrape";
-          chrome.storage.local.set({ expansion: exp });
-        }
-        // else: still loading, wait for next tick
-      });
-      return;
-    }
-
-    if (exp.phase === "scrape") {
-      // Try to scrape the AMBOSS tab
-      exp.scrapeAttempts++;
-      chrome.storage.local.set({ expansion: exp });
-
-      chrome.scripting.executeScript(
-        { target: { tabId: exp.ambossTabId }, files: ["config.js"] },
-        function () {
+      // Set busy FIRST (sync write) to prevent duplicate ticks
+      exp.phase = "busy";
+      chrome.storage.local.set({ expansion: exp }, function () {
+        var url = exp.baseUrl + exp.currentQ;
+        chrome.tabs.create({ url: url, active: false }, function (tab) {
           if (chrome.runtime.lastError) {
-            handleScrapeResult(exp, null);
+            // Skip this question
+            setExpansionPhase("open-amboss-next", function () {
+              setTimeout(expansionStep, 1000);
+            });
             return;
           }
-          chrome.scripting.executeScript(
-            { target: { tabId: exp.ambossTabId }, files: ["scraper.js"] },
-            function (results) {
-              if (chrome.runtime.lastError) {
-                handleScrapeResult(exp, null);
-                return;
-              }
-              var scraped = results && results[0] && results[0].result;
-              handleScrapeResult(exp, scraped);
-            }
-          );
-        }
-      );
-      return;
-    }
-
-    if (exp.phase === "wait-claude-slot") {
-      // Check if a queue slot is available
-      loadState(function (queue, timestamps, cooldownMs) {
-        timestamps = pruneTimestamps(timestamps, cooldownMs);
-        if (timestamps.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
-          exp.phase = "open-claude";
-          chrome.storage.local.set({ expansion: exp });
-        }
-        // else: wait for next tick (or queue alarm will also trigger)
-      });
-      return;
-    }
-
-    if (exp.phase === "open-claude") {
-      // Open the Claude tab and send
-      if (!exp.messageText) {
-        // No message -- skip
-        exp.currentQ++;
-        exp.phase = "open-amboss";
-        chrome.storage.local.set({ expansion: exp });
-        return;
-      }
-
-      // Record the send timestamp
-      loadState(function (queue, timestamps, cooldownMs) {
-        timestamps = pruneTimestamps(timestamps, cooldownMs);
-        timestamps.push(Date.now());
-        saveState(queue, timestamps);
-
-        openClaudeTab(exp.messageText, true, function () {
-          // Claude tab opened and injected -- advance to next question
-          exp.currentQ++;
-          exp.phase = "open-amboss";
-          exp.messageText = null;
-          exp.ambossTabId = null;
-          chrome.storage.local.set({ expansion: exp });
+          chrome.storage.local.get(["expansion"], function (r) {
+            var e = r.expansion;
+            if (!e || !e.running) { expansionLoopRunning = false; return; }
+            e.ambossTabId = tab.id;
+            e.phase = "wait-load";
+            e.scrapeAttempts = 0;
+            chrome.storage.local.set({ expansion: e }, function () {
+              setTimeout(expansionStep, 2000);
+            });
+          });
         });
       });
       return;
     }
-  });
-}
 
-function handleScrapeResult(exp, scraped) {
-  chrome.storage.local.get(["expansion"], function (result) {
-    var exp = result.expansion;
-    if (!exp || !exp.running) return;
-
-    if (scraped && scraped.question) {
-      // Scrape succeeded -- build message and move to Claude phase
-      var skill = { prefix: exp.skillPrefix };
-      exp.messageText = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
-      exp.phase = "wait-claude-slot";
-      chrome.storage.local.set({ expansion: exp });
-    } else if (exp.scrapeAttempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
-      // Retry -- stay in "scrape" phase, next tick will try again
-      exp.phase = "scrape";
-      chrome.storage.local.set({ expansion: exp });
-    } else {
-      // Give up on this question, skip
-      exp.currentQ++;
-      exp.phase = "open-amboss";
-      exp.messageText = null;
-      chrome.storage.local.set({ expansion: exp });
+    // ── WAIT FOR TAB TO LOAD ──
+    if (exp.phase === "wait-load") {
+      chrome.tabs.get(exp.ambossTabId, function (tab) {
+        if (chrome.runtime.lastError || !tab) {
+          setExpansionPhase("open-amboss-next", function () { setTimeout(expansionStep, 1000); });
+          return;
+        }
+        if (tab.status === "complete") {
+          exp.phase = "scrape";
+          chrome.storage.local.set({ expansion: exp }, function () {
+            // Wait for SPA to render
+            setTimeout(expansionStep, C.EXPANSION_INITIAL_WAIT_MS);
+          });
+        } else {
+          setTimeout(expansionStep, 2000);
+        }
+      });
+      return;
     }
+
+    // ── SCRAPE ──
+    if (exp.phase === "scrape") {
+      exp.phase = "busy";
+      exp.scrapeAttempts++;
+      chrome.storage.local.set({ expansion: exp }, function () {
+        chrome.scripting.executeScript(
+          { target: { tabId: exp.ambossTabId }, files: ["config.js"] },
+          function () {
+            if (chrome.runtime.lastError) { handleScrapeFailure(); return; }
+            chrome.scripting.executeScript(
+              { target: { tabId: exp.ambossTabId }, files: ["scraper.js"] },
+              function (results) {
+                if (chrome.runtime.lastError) { handleScrapeFailure(); return; }
+                var scraped = results && results[0] && results[0].result;
+                if (scraped && scraped.question) {
+                  // Success! Build message and go to claude phase
+                  var skill = { prefix: exp.skillPrefix };
+                  var msg = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
+                  chrome.storage.local.get(["expansion"], function (r) {
+                    var e = r.expansion;
+                    if (!e || !e.running) { expansionLoopRunning = false; return; }
+                    e.messageText = msg;
+                    e.phase = "send-claude";
+                    chrome.storage.local.set({ expansion: e }, function () {
+                      setTimeout(expansionStep, 500);
+                    });
+                  });
+                } else {
+                  handleScrapeFailure();
+                }
+              }
+            );
+          }
+        );
+      });
+      return;
+    }
+
+    // ── SEND TO CLAUDE ──
+    if (exp.phase === "send-claude") {
+      exp.phase = "busy";
+      chrome.storage.local.set({ expansion: exp }, function () {
+        loadState(function (queue, ts, cooldown) {
+          ts = pruneTimestamps(ts, cooldown);
+          if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
+            // Slot available -- open Claude tab now
+            ts.push(Date.now());
+            saveState(queue, ts);
+            openClaudeTab(exp.messageText, true, function () {
+              // Claude tab opened -- advance to next question
+              setExpansionPhase("open-amboss-next", function () {
+                setTimeout(expansionStep, 2000);
+              });
+            });
+          } else {
+            // No slot -- queue it with expansion flag
+            queue.push({ text: exp.messageText, openInBackground: true, addedAt: Date.now(), isExpansion: true });
+            // Clear messageText so we don't re-queue
+            chrome.storage.local.get(["expansion"], function (r) {
+              var e = r.expansion;
+              if (!e) return;
+              e.messageText = null;
+              e.phase = "waiting-queue";
+              chrome.storage.local.set({ expansion: e });
+            });
+            saveState(queue, ts, function () {
+              var d = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
+              chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: d });
+            });
+            // The expansion will resume when drainQueue sends this item
+            // and calls setExpansionPhase("open-amboss-next")
+            // Keep the loop alive to detect when it resumes
+            setTimeout(expansionStep, 5000);
+          }
+        });
+      });
+      return;
+    }
+
+    // ── WAITING FOR QUEUE TO DRAIN ──
+    if (exp.phase === "waiting-queue") {
+      // Just wait -- drainQueue will set phase to "open-amboss-next" when it sends
+      setTimeout(expansionStep, 5000);
+      return;
+    }
+
+    // Unknown phase -- reset
+    exp.phase = "open-amboss";
+    chrome.storage.local.set({ expansion: exp }, function () {
+      setTimeout(expansionStep, 1000);
+    });
   });
 }
 
-function advanceExpansion() {
-  // Called by drainQueue when an expansion item from the queue gets sent
+function handleScrapeFailure() {
   chrome.storage.local.get(["expansion"], function (result) {
     var exp = result.expansion;
-    if (!exp || !exp.running) return;
-    exp.currentQ++;
-    exp.phase = "open-amboss";
-    exp.messageText = null;
-    exp.ambossTabId = null;
-    chrome.storage.local.set({ expansion: exp });
+    if (!exp || !exp.running) { expansionLoopRunning = false; return; }
+
+    if (exp.scrapeAttempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
+      exp.phase = "scrape";
+      chrome.storage.local.set({ expansion: exp }, function () {
+        setTimeout(expansionStep, C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS);
+      });
+    } else {
+      // Give up, skip to next
+      setExpansionPhase("open-amboss-next", function () {
+        setTimeout(expansionStep, 1000);
+      });
+    }
   });
 }

@@ -131,9 +131,18 @@
   }
 
   // Explanation (for the correct answer)
+  // Each answer choice has its own answerExplanation element.
+  // The correct answer's explanation has the class "correctAnswerExplanation".
+  // Fall back to the first answerExplanation if the specific class isn't found
+  // (e.g. on review pages with different markup).
   var explContainer = document.querySelector(
-    C.AMBOSS_EXPLANATION_CONTAINER_SELECTOR || '[data-e2e-test-id="answerExplanation"]'
+    C.AMBOSS_EXPLANATION_CONTAINER_SELECTOR || '[class*="correctAnswerExplanation"][data-e2e-test-id="answerExplanation"]'
   );
+  if (!explContainer) {
+    explContainer = document.querySelector(
+      C.AMBOSS_EXPLANATION_CONTAINER_FALLBACK_SELECTOR || '[data-e2e-test-id="answerExplanation"]'
+    );
+  }
   if (explContainer) {
     var explContent = explContainer.querySelector(
       C.AMBOSS_EXPLANATION_CONTENT_SELECTOR || '[class*="explanationContent"]'

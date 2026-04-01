@@ -1,0 +1,180 @@
+/* debug.css -- Debug page styles (dark terminal aesthetic) */
+
+:root {
+  --bg: #11111b;
+  --bg-section: #1e1e2e;
+  --text: #cdd6f4;
+  --text-dim: #6c7086;
+  --accent: #cba6f7;
+  --accent-glow: rgba(203, 166, 247, 0.1);
+  --btn-bg: #313244;
+  --btn-border: #45475a;
+  --btn-hover: #45475a;
+  --ok: #a6e3a1;
+  --warn: #f9e2af;
+  --err: #f38ba8;
+  --info: #89b4fa;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 28px 32px;
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #313244;
+}
+
+h1 {
+  font-size: 16px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent), #89b4fa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin: 18px 0 10px;
+}
+
+h2:first-child {
+  margin-top: 0;
+}
+
+#quick-actions { display: flex; gap: 8px; }
+
+/* ── Buttons ── */
+.btn {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 7px 14px;
+  background: var(--btn-bg);
+  color: var(--text);
+  border: 1px solid var(--btn-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.btn:hover {
+  background: var(--btn-hover);
+  border-color: #585b70;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.btn:active {
+  background: #585b70;
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.btn.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  background: linear-gradient(135deg, rgba(203, 166, 247, 0.08), transparent);
+}
+
+.btn.primary:hover {
+  background: linear-gradient(135deg, rgba(203, 166, 247, 0.15), rgba(203, 166, 247, 0.05));
+  box-shadow: 0 2px 12px rgba(203, 166, 247, 0.15);
+}
+
+.btn.small {
+  padding: 4px 10px;
+  font-size: 10px;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ── Sections ── */
+#tests {
+  background: var(--bg-section);
+  padding: 20px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  border: 1px solid rgba(49, 50, 68, 0.6);
+}
+
+#log-section {
+  background: var(--bg-section);
+  padding: 20px;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(49, 50, 68, 0.6);
+}
+
+#log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+#log {
+  background: var(--bg);
+  border: 1px solid #313244;
+  border-radius: var(--radius);
+  padding: 14px;
+  min-height: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.7;
+  font-size: 11px;
+}
+
+/* Scrollbar styling */
+#log::-webkit-scrollbar {
+  width: 6px;
+}
+
+#log::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#log::-webkit-scrollbar-thumb {
+  background: #313244;
+  border-radius: 3px;
+}
+
+#log::-webkit-scrollbar-thumb:hover {
+  background: #45475a;
+}
+
+/* ── Log classes ── */
+.log-ok { color: var(--ok); }
+.log-err { color: var(--err); }
+.log-warn { color: var(--warn); }
+.log-info { color: var(--info); }
+.log-data { color: var(--text); }
+.log-label { color: var(--accent); font-weight: 600; }
+.log-time { color: var(--text-dim); }

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "AMBOSS Diagram Maker",
+  "version": "2.0.0",
+  "description": "Generate medical diagrams from AMBOSS questions using Claude skills",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://next.amboss.com/*",
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AMBOSS Diagram Maker"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["config.js", "claude-injector.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

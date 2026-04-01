@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self'; object-src 'none';">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>AMBOSS Diagrams</h1>
+    </header>
+
+    <!-- Status indicator -->
+    <div id="status-bar">
+      <span id="status-dot" class="dot"></span>
+      <span id="status-text">Checking page...</span>
+    </div>
+
+    <!-- Skill buttons -->
+    <div id="skill-buttons"></div>
+
+    <!-- Settings -->
+    <div id="settings">
+      <label class="toggle-row">
+        <span>Open Claude tab in background</span>
+        <input type="checkbox" id="toggle-background">
+      </label>
+    </div>
+
+    <!-- Footer links -->
+    <div id="footer">
+      <a href="#" id="open-debug">Debug</a>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

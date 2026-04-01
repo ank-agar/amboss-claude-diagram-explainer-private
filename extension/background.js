@@ -137,7 +137,11 @@ function drainQueue() {
 
 chrome.alarms.onAlarm.addListener(function (alarm) {
   if (alarm.name === QUEUE_ALARM) drainQueue();
-  if (alarm.name === EXPANSION_ALARM) expansionTick();
+  if (alarm.name === EXPANSION_ALARM) {
+    // Safety net: restart the fast tick loop if it died
+    expansionLoopActive = false;
+    expansionTickLoop();
+  }
 });
 
 // Drain on startup in case items were left
@@ -209,12 +213,14 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       messageText: null,
     };
 
-    chrome.storage.local.set({ expansion: exp }, function () {
+    // Clear any stale send timestamps before starting expansion
+    chrome.storage.local.set({ expansion: exp, sendTimestamps: [] }, function () {
       var count = exp.endQ - exp.startQ + 1;
       sendResponse({ success: true, message: "Expanding " + count + " questions..." });
-      // Start the tick loop -- fires every 3s to drive the state machine
-      chrome.alarms.create(EXPANSION_ALARM, { periodInMinutes: 0.05 }); // ~3s
-      expansionTick(); // also tick immediately
+      // Chrome alarms minimum is 0.5 min. Use that, but also tick immediately
+      // and keep worker alive with self-messaging during active expansion.
+      chrome.alarms.create(EXPANSION_ALARM, { periodInMinutes: 0.5 });
+      expansionTickLoop();
     });
     return true;
   }
@@ -225,6 +231,19 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       sendResponse(exp && exp.running
         ? { running: true, currentQ: exp.currentQ, endQ: exp.endQ, startQ: exp.startQ, phase: exp.phase }
         : { running: false });
+    });
+    return true;
+  }
+
+  // Reset all queue/expansion state (for debugging)
+  if (msg.type === "reset-all-state") {
+    chrome.storage.local.set({
+      sendQueue: [],
+      sendTimestamps: [],
+      expansion: null,
+    }, function () {
+      chrome.alarms.clearAll();
+      sendResponse({ success: true });
     });
     return true;
   }
@@ -244,9 +263,36 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   return false;
 });
 
-// ── Expansion state machine (driven by periodic alarm) ──
+// ── Expansion tick loop ──
+// Chrome alarms have a 30s minimum period. For faster ticking during active
+// expansion, we use a self-scheduling setTimeout loop. The 30s alarm acts as
+// a safety net to restart the loop if the worker slept and killed the setTimeout.
+
+var expansionLoopActive = false;
+
+function expansionTickLoop() {
+  if (expansionLoopActive) return;
+  expansionLoopActive = true;
+  doExpansionLoop();
+}
+
+function doExpansionLoop() {
+  chrome.storage.local.get(["expansion"], function (result) {
+    var exp = result.expansion;
+    if (!exp || !exp.running) {
+      expansionLoopActive = false;
+      chrome.alarms.clear(EXPANSION_ALARM);
+      return;
+    }
+    expansionTick();
+    // Schedule next tick in 3 seconds. If the worker sleeps, the alarm
+    // at 30s will call expansionTickLoop() to restart this.
+    setTimeout(doExpansionLoop, 3000);
+  });
+}
+
+// ── Expansion state machine ──
 // Each tick reads the expansion state, does one step, saves, and returns.
-// This avoids long setTimeout chains that die when the service worker sleeps.
 
 function expansionTick() {
   chrome.storage.local.get(["expansion"], function (result) {

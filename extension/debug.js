@@ -235,6 +235,16 @@
         log("Storage", "All settings cleared", "ok");
       });
     },
+
+    "reset-queue": function () {
+      chrome.runtime.sendMessage({ type: "reset-all-state" }, function (resp) {
+        if (chrome.runtime.lastError) {
+          log("Reset", "Error: " + chrome.runtime.lastError.message, "err");
+          return;
+        }
+        log("Reset", "Queue, timestamps, and expansion state cleared", "ok");
+      });
+    },
   };
 
   // ── Bind test buttons ──

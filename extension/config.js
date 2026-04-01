@@ -73,6 +73,7 @@ var CONFIG = CONFIG || {
   // ── Storage keys ──
   STORAGE_KEY_SELECTED_SKILL: "selectedSkill",
   STORAGE_KEY_OPEN_IN_BACKGROUND: "openInBackground",
+  STORAGE_KEY_EXPANSION_LAYOUT: "expansionLayout",
   STORAGE_KEY_COOLDOWN_MS: "cooldownMs",
   STORAGE_KEY_PROMPT_TEMPLATE: "promptTemplate",
   STORAGE_KEY_WRONG_CHOICE_TEMPLATE: "wrongChoiceTemplate",
@@ -99,6 +100,8 @@ var CONFIG = CONFIG || {
   EXPANSION_SCRAPE_RETRY_INTERVAL_MS: 2000, // retry scrape every 2s if content not ready
   EXPANSION_SCRAPE_MAX_RETRIES: 10, // max retries (total ~23s wait)
   EXPANSION_OVERHEAD_PER_QUESTION_MS: 15000, // ~15s overhead per question for time estimate
+  EXPANSION_LAYOUT_INTERLEAVED: "interleaved",
+  EXPANSION_LAYOUT_SEPARATE: "separate",
 
   // ── Message types ──
   MSG_SCRAPE_PAGE: "scrape-amboss-page",

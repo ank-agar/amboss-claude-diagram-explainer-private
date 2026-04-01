@@ -256,6 +256,7 @@
   var expandStart = document.getElementById("expand-start");
   var expandEnd = document.getElementById("expand-end");
   var expandSkill = document.getElementById("expand-skill");
+  var expandLayout = document.getElementById("expand-layout");
   var expandBtn = document.getElementById("expand-btn");
   var expandBtnLabel = document.getElementById("expand-btn-label");
   var expandBtnHint = document.getElementById("expand-btn-hint");
@@ -306,6 +307,18 @@
       expandSkill.appendChild(opt3);
     });
 
+    // Load saved layout preference
+    chrome.storage.local.get([C.STORAGE_KEY_EXPANSION_LAYOUT], function (result) {
+      if (result[C.STORAGE_KEY_EXPANSION_LAYOUT]) {
+        expandLayout.value = result[C.STORAGE_KEY_EXPANSION_LAYOUT];
+      }
+    });
+    expandLayout.addEventListener("change", function () {
+      var obj = {};
+      obj[C.STORAGE_KEY_EXPANSION_LAYOUT] = expandLayout.value;
+      chrome.storage.local.set(obj);
+    });
+
     updateExpansionEstimate();
     expandBtn.disabled = false;
     expandBtnHint.textContent = "Opens each question + Claude tab in order";
@@ -344,6 +357,7 @@
         skillId: selectedSkill.id,
         skillPrefix: selectedSkill.prefix,
         openInBackground: toggleBackground.checked,
+        layout: expandLayout.value,
       }, function (response) {
         if (chrome.runtime.lastError) return;
         if (response && response.success) {

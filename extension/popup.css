@@ -307,11 +307,14 @@ header h1 {
   min-height: 16px;
 }
 
-#expansion-skill-select {
+#expansion-options {
   margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-#expansion-skill-select label {
+#expansion-options label {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -319,7 +322,7 @@ header h1 {
   color: var(--text-dim);
 }
 
-#expansion-skill-select select {
+#expansion-options select {
   font-size: 12px;
   padding: 4px 6px;
   background: var(--bg);

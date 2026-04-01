@@ -4,8 +4,7 @@
  * Design: All tunable values, string keys, and selectors live here.
  */
 
-if (typeof CONFIG !== "undefined") { /* already loaded */ } else
-var CONFIG = {
+var CONFIG = CONFIG || {
   // ── Extension metadata ──
   VERSION: "2.0.0",
 

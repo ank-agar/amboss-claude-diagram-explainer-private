@@ -31,6 +31,7 @@
     pageState: getPageState(),
     url: window.location.href,
     questionId: null,
+    questionNum: null,
   };
 
   // Parse URL for question ID
@@ -39,6 +40,7 @@
   );
   if (urlMatch) {
     result.questionId = urlMatch[2] + ":" + urlMatch[3];
+    result.questionNum = urlMatch[3];
   }
 
   // Question text

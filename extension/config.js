@@ -39,12 +39,13 @@ var CONFIG = {
 
   // ── Prompt template ──
   // Users can customize how scraped content is structured before sending.
-  // Available placeholders: {{question}}, {{attendingTip}}, {{correctAnswer}},
-  // {{explanation}}, {{allAnswers}}, {{wrongChoiceSection}}, {{skillPrefix}}
+  // Available placeholders: {{question}}, {{questionNum}}, {{attendingTip}},
+  // {{correctAnswer}}, {{explanation}}, {{allAnswers}}, {{wrongChoiceSection}},
+  // {{skillPrefix}}
   // Sections wrapped in {{#if field}}...{{/if}} are omitted when that field is empty.
   PROMPT_TEMPLATE: [
     "{{skillPrefix}}",
-    "Question:",
+    "Question {{questionNum}}:",
     "{{question}}",
     "{{#if attendingTip}}",
     "Attending Tip:",

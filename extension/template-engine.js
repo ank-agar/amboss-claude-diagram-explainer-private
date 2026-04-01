@@ -84,6 +84,7 @@ var TemplateEngine = (function () {
     // Render the main template
     return render(promptTemplate, {
       skillPrefix: skill.prefix,
+      questionNum: scraped.questionNum || "",
       question: scraped.question || "",
       attendingTip: scraped.attendingTip || "",
       correctAnswer: correctAnswer,

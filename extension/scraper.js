@@ -98,7 +98,10 @@
         C.AMBOSS_EXPLANATION_CONTENT_SELECTOR || '[class*="explanationContent"]'
       );
       if (wrongExplContent) {
-        result.userWrongChoice.explanation = wrongExplContent.innerText.trim();
+        // Use textContent instead of innerText because the explanation
+        // is inside a collapsed/hidden div (height:0, display:none)
+        // and innerText respects CSS visibility, returning empty/truncated text
+        result.userWrongChoice.explanation = wrongExplContent.textContent.trim();
       }
     }
   }

@@ -36,6 +36,11 @@
       "matches": ["https://claude.ai/*"],
       "js": ["config.js", "claude-injector.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://next.amboss.com/*"],
+      "js": ["config.js", "amboss-watcher.js"],
+      "run_at": "document_idle"
     }
   ]
 }

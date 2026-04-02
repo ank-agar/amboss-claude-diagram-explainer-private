@@ -156,6 +156,38 @@ function scheduleExpansionStep(delayMs) {
 // ── Messages ──
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+
+  // ── Auto-generate: triggered by content script when user answers a question ──
+  if (msg.type === C.MSG_AUTO_GENERATE_TRIGGERED) {
+    var tabId = sender.tab ? sender.tab.id : null;
+    if (!tabId) return false;
+
+    // Load the auto-generate skill preference
+    chrome.storage.local.get(
+      [C.STORAGE_KEY_AUTO_GENERATE_SKILL],
+      function (result) {
+        var skillId = result[C.STORAGE_KEY_AUTO_GENERATE_SKILL] || C.DEFAULT_AUTO_GENERATE_SKILL;
+        var skill = C.SKILLS.find(function (s) { return s.id === skillId; }) || C.SKILLS[0];
+
+        // Scrape the AMBOSS tab
+        doScrape(tabId, function (scraped) {
+          if (!scraped || !scraped.question) {
+            // Retry once after a delay (SPA might not have rendered explanations yet)
+            setTimeout(function () {
+              doScrape(tabId, function (scraped2) {
+                if (!scraped2 || !scraped2.question) return;
+                sendAutoGenerate(skill, scraped2);
+              });
+            }, 3000);
+            return;
+          }
+          sendAutoGenerate(skill, scraped);
+        });
+      }
+    );
+    return false;
+  }
+
   if (msg.type === C.MSG_OPEN_AND_INJECT) {
     if (!msg.text || typeof msg.text !== "string") {
       sendResponse({ success: false, error: "Missing message text" }); return false;
@@ -540,6 +572,32 @@ function expansionStep() {
 }
 
 // ── Helpers ──
+
+/**
+ * Send an auto-generated diagram request through the rate-limited queue.
+ * Always opens in the background so the user stays on AMBOSS.
+ */
+function sendAutoGenerate(skill, scraped) {
+  var messageText = TemplateEngine.buildMessage(
+    skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE
+  );
+
+  // Route through the same queue system as manual sends
+  loadState(function (queue, ts, cooldown) {
+    ts = pruneTimestamps(ts, cooldown);
+    if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
+      ts.push(Date.now());
+      saveState(queue, ts);
+      openClaudeTab(messageText, true);
+    } else {
+      queue.push({ text: messageText, openInBackground: true, addedAt: Date.now() });
+      saveState(queue, ts, function () {
+        var d = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
+        chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: d });
+      });
+    }
+  });
+}
 
 function doScrape(tabId, callback) {
   chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["config.js"] }, function () {

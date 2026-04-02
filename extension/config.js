@@ -74,6 +74,8 @@ var CONFIG = CONFIG || {
   // ── Storage keys ──
   STORAGE_KEY_SELECTED_SKILL: "selectedSkill",
   STORAGE_KEY_OPEN_IN_BACKGROUND: "openInBackground",
+  STORAGE_KEY_AUTO_GENERATE: "autoGenerate",
+  STORAGE_KEY_AUTO_GENERATE_SKILL: "autoGenerateSkill",
   STORAGE_KEY_EXPANSION_LAYOUT: "expansionLayout",
   STORAGE_KEY_COOLDOWN_MS: "cooldownMs",
   STORAGE_KEY_PROMPT_TEMPLATE: "promptTemplate",
@@ -82,6 +84,12 @@ var CONFIG = CONFIG || {
   // ── Defaults ──
   DEFAULT_SKILL_ID: "causal-explainer-brief-v2",
   DEFAULT_OPEN_IN_BACKGROUND: false,
+  DEFAULT_AUTO_GENERATE: false,
+  DEFAULT_AUTO_GENERATE_SKILL: "causal-explainer-brief-v2",
+
+  // ── AMBOSS answer detection ──
+  AMBOSS_UNANSWERED_SELECTOR: '[data-e2e-test-id="answer-theme-unanswered"]',
+  AMBOSS_ANSWERED_SELECTOR: '[data-e2e-test-id*="Correct"], [data-e2e-test-id="answer-theme-answerOptionIncorrect"]',
 
   // ── Timing ──
   POPUP_AUTO_CLOSE_DELAY_MS: 1200,
@@ -112,6 +120,7 @@ var CONFIG = CONFIG || {
   MSG_START_EXPANSION: "start-tab-expansion",
   MSG_GET_EXPANSION_STATUS: "get-expansion-status",
   MSG_STOP_EXPANSION: "stop-expansion",
+  MSG_AUTO_GENERATE_TRIGGERED: "auto-generate-triggered",
 
   // ── Storage keys (queue) ──
   STORAGE_KEY_SEND_TIMESTAMPS: "sendTimestamps",

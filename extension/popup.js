@@ -16,6 +16,9 @@
   var statusText = document.getElementById("status-text");
   var skillButtonsContainer = document.getElementById("skill-buttons");
   var toggleBackground = document.getElementById("toggle-background");
+  var toggleAutoGenerate = document.getElementById("toggle-auto-generate");
+  var autoGenerateSkillRow = document.getElementById("auto-generate-skill-row");
+  var autoGenerateSkillSelect = document.getElementById("auto-generate-skill");
   var selectCooldown = document.getElementById("select-cooldown");
   var openDebugLink = document.getElementById("open-debug");
 
@@ -34,7 +37,7 @@
   // ── Settings ──
   function loadSettings() {
     chrome.storage.local.get(
-      [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS],
+      [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS, C.STORAGE_KEY_AUTO_GENERATE, C.STORAGE_KEY_AUTO_GENERATE_SKILL],
       function (result) {
         if (chrome.runtime.lastError) return;
         toggleBackground.checked =
@@ -44,8 +47,26 @@
         if (result[C.STORAGE_KEY_COOLDOWN_MS]) {
           selectCooldown.value = String(result[C.STORAGE_KEY_COOLDOWN_MS]);
         }
+        // Auto-generate
+        var autoOn = result[C.STORAGE_KEY_AUTO_GENERATE] !== undefined
+          ? result[C.STORAGE_KEY_AUTO_GENERATE]
+          : C.DEFAULT_AUTO_GENERATE;
+        toggleAutoGenerate.checked = autoOn;
+        autoGenerateSkillRow.classList.toggle("hidden", !autoOn);
+        if (result[C.STORAGE_KEY_AUTO_GENERATE_SKILL]) {
+          autoGenerateSkillSelect.value = result[C.STORAGE_KEY_AUTO_GENERATE_SKILL];
+        }
       }
     );
+
+    // Populate auto-generate skill dropdown
+    C.SKILLS.forEach(function (skill) {
+      var opt = document.createElement("option");
+      opt.value = skill.id;
+      opt.textContent = skill.label;
+      if (skill.id === C.DEFAULT_AUTO_GENERATE_SKILL) opt.selected = true;
+      autoGenerateSkillSelect.appendChild(opt);
+    });
   }
 
   function bindEvents() {
@@ -58,6 +79,19 @@
     selectCooldown.addEventListener("change", function () {
       var obj = {};
       obj[C.STORAGE_KEY_COOLDOWN_MS] = parseInt(selectCooldown.value, 10);
+      chrome.storage.local.set(obj);
+    });
+
+    toggleAutoGenerate.addEventListener("change", function () {
+      var obj = {};
+      obj[C.STORAGE_KEY_AUTO_GENERATE] = toggleAutoGenerate.checked;
+      chrome.storage.local.set(obj);
+      autoGenerateSkillRow.classList.toggle("hidden", !toggleAutoGenerate.checked);
+    });
+
+    autoGenerateSkillSelect.addEventListener("change", function () {
+      var obj = {};
+      obj[C.STORAGE_KEY_AUTO_GENERATE_SKILL] = autoGenerateSkillSelect.value;
       chrome.storage.local.set(obj);
     });
 

@@ -261,6 +261,7 @@ function expansionStep() {
   chrome.storage.local.get(["expansion"], function (result) {
     var exp = result.expansion;
     if (!exp || !exp.running) return;
+    console.log("[expansion] phase=" + exp.phase + " q=" + exp.currentQ + "/" + exp.endQ + " layout=" + exp.layout);
     if (exp.currentQ > exp.endQ && exp.phase !== "sep-start-claude" && exp.phase !== "sep-send-claude") {
       exp.running = false;
       chrome.storage.local.set({ expansion: exp });

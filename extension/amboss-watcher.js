@@ -69,13 +69,16 @@
       return;
     }
 
+    var triggered = false;
     observer = new MutationObserver(function () {
+      if (triggered) return;
       if (isAnswered() && !isUnanswered()) {
         // Transition detected: was unanswered, now answered
-        // Small delay to let AMBOSS render explanations
-        setTimeout(onAnswerDetected, 1500);
-        // Stop observing -- we only trigger once per question
+        // Disconnect IMMEDIATELY to prevent duplicate triggers
+        triggered = true;
         if (observer) observer.disconnect();
+        // Delay to let AMBOSS render explanations before scraping
+        setTimeout(onAnswerDetected, 1500);
       }
     });
 

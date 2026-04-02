@@ -331,6 +331,7 @@
 
     expandStart.addEventListener("change", updateExpansionEstimate);
     expandEnd.addEventListener("change", updateExpansionEstimate);
+    expandLayout.addEventListener("change", updateExpansionEstimate);
 
     expandBtn.addEventListener("click", function () {
       if (!sessionInfo) return;
@@ -346,7 +347,8 @@
       var selectedSkill = C.SKILLS.find(function (s) { return s.id === expandSkill.value; });
       if (!selectedSkill) return;
 
-      setStatus("ok", "Starting batch generation...");
+      var chosenLayout = expandLayout.value;
+      setStatus("ok", "Starting " + chosenLayout + " batch...");
       expandBtn.disabled = true;
 
       chrome.runtime.sendMessage({
@@ -357,7 +359,7 @@
         skillId: selectedSkill.id,
         skillPrefix: selectedSkill.prefix,
         openInBackground: toggleBackground.checked,
-        layout: expandLayout.value,
+        layout: chosenLayout,
       }, function (response) {
         if (chrome.runtime.lastError) return;
         if (response && response.success) {
@@ -384,7 +386,8 @@
       return;
     }
 
-    expandBtnLabel.textContent = "Generate " + count + " Question" + (count > 1 ? "s" : "");
+    var layoutLabel = expandLayout.value === C.EXPANSION_LAYOUT_SEPARATE ? " (separate window)" : " (interleaved)";
+    expandBtnLabel.textContent = "Generate " + count + " Question" + (count > 1 ? "s" : "") + layoutLabel;
 
     // Time estimate: first 3 are immediate, then batches of 3 with cooldown
     chrome.runtime.sendMessage({ type: C.MSG_GET_QUEUE_STATUS }, function (status) {

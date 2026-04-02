@@ -327,7 +327,7 @@ function expansionStep() {
               scheduleExpansionStep(500);
             });
           } else {
-            handleScrapeRetry(exp, "open-amboss", function () {});
+            handleScrapeRetry();
           }
         });
       });
@@ -442,7 +442,7 @@ function expansionStep() {
               });
             });
           } else {
-            handleScrapeRetry(exp, "sep-open-amboss", function () {});
+            handleScrapeRetry();
           }
         });
       });
@@ -589,18 +589,18 @@ function advanceSepAmboss(callback) {
   });
 }
 
-function handleScrapeRetry(exp, fallbackPhase, callback) {
+function handleScrapeRetry() {
   chrome.storage.local.get(["expansion"], function (result) {
     var e = result.expansion;
     if (!e || !e.running) return;
     if (e.scrapeAttempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
-      e.phase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-scrape" : "scrape";
+      e.phase = e.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-scrape" : "scrape";
       chrome.storage.local.set({ expansion: e }, function () {
         scheduleExpansionStep(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS);
       });
     } else {
       // Skip this question
-      if (exp.layout === C.EXPANSION_LAYOUT_SEPARATE) {
+      if (e.layout === C.EXPANSION_LAYOUT_SEPARATE) {
         advanceSepAmboss(function () { scheduleExpansionStep(1000); });
       } else {
         advanceInterleaved(function () { scheduleExpansionStep(1000); });

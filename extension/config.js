@@ -66,6 +66,8 @@ var CONFIG = CONFIG || {
     "",
     "{{wrongChoiceSection}}",
     "{{/if}}",
+    "",
+    "And after explaining all that, answer this: what from the question stem gives away that the patient has the specific condition that they have?",
   ].join("\n"),
 
   // Template for the wrong-choice addendum (used when user got it wrong)

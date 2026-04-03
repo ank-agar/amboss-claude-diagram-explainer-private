@@ -17,12 +17,25 @@
       <span id="status-text">Checking page...</span>
     </div>
 
-    <!-- Skill buttons -->
-    <div id="skill-buttons"></div>
+    <!-- Queue status (always visible) -->
+    <div id="queue-status" class="section-card">
+      <div class="section-title">Queue</div>
+      <div id="queue-info">No items in queue</div>
+    </div>
 
-    <!-- Tab Expansion (hidden until session detected) -->
-    <div id="expansion-panel" class="hidden">
-      <div id="expansion-header">Batch Generate</div>
+    <!-- Section 1: Single Generate -->
+    <div class="section-card">
+      <div class="section-title">Single Generate</div>
+      <div id="skill-buttons"></div>
+      <label class="toggle-row">
+        <span>Open Claude tab in background</span>
+        <input type="checkbox" id="toggle-background">
+      </label>
+    </div>
+
+    <!-- Section 2: Batch Generate (hidden until session detected) -->
+    <div id="expansion-panel" class="section-card hidden">
+      <div class="section-title">Batch Generate</div>
       <div id="expansion-range">
         <label>
           <span>From Q</span>
@@ -33,45 +46,48 @@
           <select id="expand-end"></select>
         </label>
       </div>
-      <div id="expansion-estimate"></div>
-      <button class="skill-btn" id="expand-btn" disabled>
-        <span class="skill-icon">&#x1F4DA;</span>
-        <span class="skill-content">
-          <span class="skill-label" id="expand-btn-label">Generate All</span>
-          <span class="skill-hint" id="expand-btn-hint">Select a skill first</span>
-        </span>
-      </button>
       <div id="expansion-options">
         <label>
           <span>Skill:</span>
           <select id="expand-skill"></select>
         </label>
         <label>
-          <span>Layout:</span>
+          <span>Claude tabs:</span>
           <select id="expand-layout">
             <option value="same-window">Same window</option>
             <option value="separate">Separate window</option>
           </select>
         </label>
       </div>
+      <div id="expansion-estimate"></div>
+      <button class="skill-btn" id="expand-btn" disabled>
+        <span class="skill-icon">&#x1F4DA;</span>
+        <span class="skill-content">
+          <span class="skill-label" id="expand-btn-label">Generate All</span>
+          <span class="skill-hint" id="expand-btn-hint">Select a range above</span>
+        </span>
+      </button>
     </div>
 
-    <!-- Settings -->
-    <div id="settings">
+    <!-- Section 3: Auto Generate -->
+    <div class="section-card">
+      <div class="section-title">Auto Generate on Answer</div>
       <label class="toggle-row">
-        <span>Open Claude tab in background</span>
-        <input type="checkbox" id="toggle-background">
-      </label>
-      <label class="toggle-row">
-        <span>Auto-generate on answer</span>
+        <span>Enabled</span>
         <input type="checkbox" id="toggle-auto-generate">
       </label>
       <div id="auto-generate-skill-row" class="setting-row hidden">
-        <span>Auto-generate skill</span>
+        <span>Skill</span>
         <select id="auto-generate-skill"></select>
       </div>
+      <div class="section-hint">When on, answering an AMBOSS question automatically generates a diagram in a background tab.</div>
+    </div>
+
+    <!-- Section 4: Settings -->
+    <div class="section-card">
+      <div class="section-title">Settings</div>
       <label class="setting-row">
-        <span>Cooldown between batches of 3</span>
+        <span>Cooldown (per 3 sends)</span>
         <select id="select-cooldown">
           <option value="60000">1 min</option>
           <option value="90000">1.5 min</option>
@@ -92,7 +108,7 @@
       </label>
     </div>
 
-    <!-- Footer links -->
+    <!-- Footer -->
     <div id="footer">
       <a href="#" id="open-debug">Debug</a>
     </div>

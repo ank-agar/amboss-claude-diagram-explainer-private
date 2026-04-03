@@ -20,6 +20,7 @@
   var autoGenerateSkillRow = document.getElementById("auto-generate-skill-row");
   var autoGenerateSkillSelect = document.getElementById("auto-generate-skill");
   var selectCooldown = document.getElementById("select-cooldown");
+  var queueInfo = document.getElementById("queue-info");
   var openDebugLink = document.getElementById("open-debug");
 
   // ── State ──
@@ -32,6 +33,7 @@
     renderSkillButtons();
     detectAmbossTab();
     bindEvents();
+    updateQueueStatus();
   }
 
   // ── Settings ──
@@ -283,6 +285,53 @@
     return TemplateEngine.buildMessage(
       skill, scraped, cachedPromptTemplate, cachedWrongChoiceTemplate
     );
+  }
+
+  // ── Queue Status ──
+  function updateQueueStatus() {
+    chrome.runtime.sendMessage({ type: C.MSG_GET_QUEUE_STATUS }, function (status) {
+      if (chrome.runtime.lastError || !status) {
+        queueInfo.textContent = "Unable to fetch queue status";
+        return;
+      }
+
+      var parts = [];
+
+      if (status.queueLength > 0) {
+        parts.push(status.queueLength + " item" + (status.queueLength > 1 ? "s" : "") + " queued");
+      }
+
+      if (status.recentSends > 0) {
+        parts.push(status.recentSends + "/" + status.maxConcurrent + " slots used");
+      }
+
+      if (status.nextSlotInMs > 0) {
+        var mins = Math.ceil(status.nextSlotInMs / 60000);
+        parts.push("next slot in ~" + mins + " min");
+      }
+
+      var cooldownMin = (status.cooldownMs / 60000).toFixed(1).replace(/\.0$/, "");
+      parts.push("cooldown: " + cooldownMin + " min");
+
+      if (parts.length === 1) {
+        // Only cooldown, nothing active
+        queueInfo.textContent = "Idle. Cooldown set to " + cooldownMin + " min.";
+        queueInfo.className = "";
+      } else {
+        queueInfo.textContent = parts.join("  ·  ");
+        queueInfo.className = status.queueLength > 0 ? "has-items" : "";
+      }
+    });
+
+    // Also check expansion status
+    chrome.runtime.sendMessage({ type: C.MSG_GET_EXPANSION_STATUS }, function (expStatus) {
+      if (chrome.runtime.lastError || !expStatus || !expStatus.running) return;
+      var done = expStatus.currentQ - expStatus.startQ;
+      var total = expStatus.endQ - expStatus.startQ + 1;
+      var current = queueInfo.textContent;
+      queueInfo.textContent = "Expanding: Q" + expStatus.currentQ + " (" + done + "/" + total + " done, phase: " + expStatus.phase + ")  ·  " + current;
+      queueInfo.className = "has-items";
+    });
   }
 
   // ── Tab Expansion ──

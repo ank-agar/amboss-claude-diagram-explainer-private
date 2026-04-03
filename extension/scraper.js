@@ -79,9 +79,19 @@
     if (!btn) return;
     var textEl = btn.querySelector(answerContentSel);
     var isCorrect = !!btn.closest(correctSel);
+    // Get this answer's explanation (inside the parent theme wrapper)
+    var answerExpl = "";
+    var themeWrapper = btn.closest('[data-e2e-test-id^="answer-theme-"]');
+    if (themeWrapper) {
+      var explEl = themeWrapper.querySelector('[data-e2e-test-id="answerExplanation"] [class*="explanationContent"]');
+      if (explEl) {
+        answerExpl = explEl.textContent.trim();
+      }
+    }
     result.answers[letter.toUpperCase()] = {
       text: textEl ? textEl.innerText.trim() : "",
       isCorrect: isCorrect,
+      explanation: answerExpl,
     };
     if (isCorrect) {
       result.correctAnswer = {

@@ -188,6 +188,7 @@ header h1 {
   transition: color 0.2s;
 }
 .toggle-row:hover { color: var(--text); }
+.toggle-row.sub-toggle { padding-left: 16px; font-size: 11px; }
 
 .toggle-row input[type="checkbox"] {
   -webkit-appearance: none;

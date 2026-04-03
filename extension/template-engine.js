@@ -58,12 +58,17 @@ var TemplateEngine = (function () {
     addonSettings = addonSettings || {};
     // Build the answer choices text
     var allAnswers = "";
+    var includeExpl = addonSettings.includeChoiceExplanations && addonSettings.allChoices;
     var answerKeys = Object.keys(scraped.answers || {});
     if (answerKeys.length > 0) {
       allAnswers = answerKeys.map(function (letter) {
         var a = scraped.answers[letter];
         var marker = a.isCorrect ? " (CORRECT)" : "";
-        return letter + ". " + a.text + marker;
+        var line = letter + ". " + a.text + marker;
+        if (includeExpl && a.explanation) {
+          line += "\n   Explanation: " + a.explanation;
+        }
+        return line;
       }).join("\n");
     }
 
@@ -120,6 +125,7 @@ var TemplateEngine = (function () {
       C.STORAGE_KEY_ADDON_STEM_CLUES || "addonStemClues",
       C.STORAGE_KEY_ADDON_WRONG_CHOICE || "addonWrongChoice",
       C.STORAGE_KEY_ADDON_ALL_CHOICES || "addonAllChoices",
+      C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS || "includeChoiceExplanations",
     ];
     if (typeof chrome !== "undefined" && chrome.storage) {
       chrome.storage.local.get(keys, function (result) {
@@ -127,6 +133,7 @@ var TemplateEngine = (function () {
           stemClues: result[keys[0]] !== undefined ? result[keys[0]] : (C.DEFAULT_ADDON_STEM_CLUES !== undefined ? C.DEFAULT_ADDON_STEM_CLUES : true),
           wrongChoice: result[keys[1]] !== undefined ? result[keys[1]] : (C.DEFAULT_ADDON_WRONG_CHOICE !== undefined ? C.DEFAULT_ADDON_WRONG_CHOICE : true),
           allChoices: result[keys[2]] !== undefined ? result[keys[2]] : (C.DEFAULT_ADDON_ALL_CHOICES !== undefined ? C.DEFAULT_ADDON_ALL_CHOICES : false),
+          includeChoiceExplanations: result[keys[3]] !== undefined ? result[keys[3]] : (C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS !== undefined ? C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS : false),
         });
       });
     } else {
@@ -134,6 +141,7 @@ var TemplateEngine = (function () {
         stemClues: C.DEFAULT_ADDON_STEM_CLUES !== undefined ? C.DEFAULT_ADDON_STEM_CLUES : true,
         wrongChoice: C.DEFAULT_ADDON_WRONG_CHOICE !== undefined ? C.DEFAULT_ADDON_WRONG_CHOICE : true,
         allChoices: C.DEFAULT_ADDON_ALL_CHOICES !== undefined ? C.DEFAULT_ADDON_ALL_CHOICES : false,
+        includeChoiceExplanations: C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS !== undefined ? C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS : false,
       });
     }
   }

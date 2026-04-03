@@ -23,6 +23,8 @@
   var toggleAddonStem = document.getElementById("toggle-addon-stem");
   var toggleAddonWrong = document.getElementById("toggle-addon-wrong");
   var toggleAddonAllChoices = document.getElementById("toggle-addon-all-choices");
+  var includeChoiceExplRow = document.getElementById("include-choice-explanations-row");
+  var toggleIncludeChoiceExpl = document.getElementById("toggle-include-choice-explanations");
   var queueInfo = document.getElementById("queue-info");
   var openDebugLink = document.getElementById("open-debug");
 
@@ -43,7 +45,7 @@
   function loadSettings() {
     chrome.storage.local.get(
       [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS, C.STORAGE_KEY_AUTO_GENERATE, C.STORAGE_KEY_AUTO_GENERATE_SKILL,
-       C.STORAGE_KEY_ADDON_STEM_CLUES, C.STORAGE_KEY_ADDON_WRONG_CHOICE, C.STORAGE_KEY_ADDON_ALL_CHOICES],
+       C.STORAGE_KEY_ADDON_STEM_CLUES, C.STORAGE_KEY_ADDON_WRONG_CHOICE, C.STORAGE_KEY_ADDON_ALL_CHOICES, C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS],
       function (result) {
         if (chrome.runtime.lastError) return;
         toggleBackground.checked =
@@ -66,6 +68,8 @@
         toggleAddonStem.checked = result[C.STORAGE_KEY_ADDON_STEM_CLUES] !== undefined ? result[C.STORAGE_KEY_ADDON_STEM_CLUES] : C.DEFAULT_ADDON_STEM_CLUES;
         toggleAddonWrong.checked = result[C.STORAGE_KEY_ADDON_WRONG_CHOICE] !== undefined ? result[C.STORAGE_KEY_ADDON_WRONG_CHOICE] : C.DEFAULT_ADDON_WRONG_CHOICE;
         toggleAddonAllChoices.checked = result[C.STORAGE_KEY_ADDON_ALL_CHOICES] !== undefined ? result[C.STORAGE_KEY_ADDON_ALL_CHOICES] : C.DEFAULT_ADDON_ALL_CHOICES;
+        toggleIncludeChoiceExpl.checked = result[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] !== undefined ? result[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] : C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS;
+        includeChoiceExplRow.classList.toggle("hidden", !toggleAddonAllChoices.checked);
       }
     );
 
@@ -118,6 +122,12 @@
     });
     toggleAddonAllChoices.addEventListener("change", function () {
       var obj = {}; obj[C.STORAGE_KEY_ADDON_ALL_CHOICES] = toggleAddonAllChoices.checked;
+      chrome.storage.local.set(obj);
+      cachedAddonSettings = null;
+      includeChoiceExplRow.classList.toggle("hidden", !toggleAddonAllChoices.checked);
+    });
+    toggleIncludeChoiceExpl.addEventListener("change", function () {
+      var obj = {}; obj[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] = toggleIncludeChoiceExpl.checked;
       chrome.storage.local.set(obj);
       cachedAddonSettings = null;
     });

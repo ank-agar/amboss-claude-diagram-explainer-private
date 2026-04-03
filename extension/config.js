@@ -78,7 +78,6 @@ var CONFIG = CONFIG || {
 
   // ── Toggleable prompt addons ──
   PROMPT_ADDON_STEM_CLUES: "After explaining all that, answer this: what specific clues from the question stem give away that the patient has this particular condition? List each clue and explain why it points to this diagnosis.",
-  PROMPT_ADDON_WRONG_CHOICE_EXPLANATION: "Also explain why the answer choice I selected was wrong, and what about the question stem should have helped me rule it out.",
   PROMPT_ADDON_ALL_CHOICES_ANALYSIS: "In one bullet per answer choice, explain what it is and what specific details from the question stem help rule it in or rule it out as the correct answer.",
 
   // ── Storage keys ──

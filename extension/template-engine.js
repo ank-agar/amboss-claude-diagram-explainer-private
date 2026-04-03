@@ -78,9 +78,9 @@ var TemplateEngine = (function () {
       correctAnswer = scraped.correctAnswer.letter + ". " + scraped.correctAnswer.text;
     }
 
-    // Build the wrong choice section
+    // Build the wrong choice section (only if toggle is on)
     var wrongChoiceSection = "";
-    if (scraped.userWrongChoice && wrongChoiceTemplate) {
+    if (addonSettings.wrongChoice && scraped.userWrongChoice && wrongChoiceTemplate) {
       wrongChoiceSection = render(wrongChoiceTemplate, {
         wrongChoice: scraped.userWrongChoice.letter + ". " + scraped.userWrongChoice.text,
         wrongExplanation: scraped.userWrongChoice.explanation || "",
@@ -92,9 +92,6 @@ var TemplateEngine = (function () {
     var C = typeof CONFIG !== "undefined" ? CONFIG : {};
     if (addonSettings.stemClues) {
       addons.push(C.PROMPT_ADDON_STEM_CLUES || "");
-    }
-    if (addonSettings.wrongChoice && scraped.userWrongChoice) {
-      addons.push(C.PROMPT_ADDON_WRONG_CHOICE_EXPLANATION || "");
     }
     if (addonSettings.allChoices) {
       addons.push(C.PROMPT_ADDON_ALL_CHOICES_ANALYSIS || "");

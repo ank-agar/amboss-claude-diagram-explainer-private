@@ -111,7 +111,7 @@ var CONFIG = CONFIG || {
   EXPANSION_SCRAPE_RETRY_INTERVAL_MS: 2000, // retry scrape every 2s if content not ready
   EXPANSION_SCRAPE_MAX_RETRIES: 10, // max retries (total ~23s wait)
   EXPANSION_OVERHEAD_PER_QUESTION_MS: 15000, // ~15s overhead per question for time estimate
-  EXPANSION_LAYOUT_INTERLEAVED: "interleaved",
+  EXPANSION_LAYOUT_SAME_WINDOW: "same-window",
   EXPANSION_LAYOUT_SEPARATE: "separate",
 
   // ── Message types ──

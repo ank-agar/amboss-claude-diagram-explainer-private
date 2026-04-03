@@ -217,16 +217,16 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   }
 
   if (msg.type === C.MSG_START_EXPANSION) {
-    var layout = msg.layout || C.EXPANSION_LAYOUT_INTERLEAVED;
+    var layout = msg.layout || C.EXPANSION_LAYOUT_SAME_WINDOW;
     var exp = {
       baseUrl: msg.baseUrl, startQ: msg.startQ, endQ: msg.endQ,
       currentQ: msg.startQ, skillPrefix: msg.skillPrefix,
       openInBackground: !!msg.openInBackground, running: true, layout: layout,
-      phase: layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss",
-      ambossTabId: null, scrapeAttempts: 0, messageText: null,
+      phase: "open-all-tabs",
+      scrapeAttempts: 0,
       scrapedMessages: [], claudeWindowId: null, claudeIndex: 0,
       ambossTabIds: null, sepScrapeIndex: 0,
-      claudeTabId: null, // NEW: track the Claude tab we created so we can poll it
+      claudeTabId: null,
     };
     chrome.storage.local.get(["sendQueue"], function (qr) {
       var cq = (qr.sendQueue || []).filter(function (i) { return !i.isExpansion; });
@@ -318,14 +318,13 @@ function doScrape(tabId, cb) {
 //   - Claude message injection is a SEPARATE step from tab creation
 //   - The sendQueue/drainQueue system is never used by expansion
 //
-// Interleaved phases:
-//   open-amboss -> wait-amboss-load -> scrape -> check-rate-limit ->
-//   create-claude-tab -> wait-claude-load -> inject-claude -> advance
+// Phases (shared by both layout modes):
+//   open-all-tabs -> wait-load -> scrape ->
+//   start-claude -> check-rate -> create-claude ->
+//   wait-claude-load -> inject-claude -> (loop or done)
 //
-// Separate window phases:
-//   sep-open-all-tabs -> sep-wait-load -> sep-scrape ->
-//   sep-start-claude -> sep-check-rate -> sep-create-claude ->
-//   sep-wait-claude-load -> sep-inject-claude -> (loop or done)
+// "separate" layout opens Claude tabs in a new window.
+// "same-window" layout opens them in the current window.
 // ══════════════════════════════════════════════════════════════
 
 function step() {
@@ -351,7 +350,7 @@ function step() {
       } else {
         // Unknown phase -- recover
         console.warn("[exp] unknown phase: " + exp.phase + ", recovering");
-        exp.phase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss";
+        exp.phase = "open-all-tabs";
         saveExp(exp, function () { releaseLock(function () { scheduleNext(2); }); });
       }
     });
@@ -369,222 +368,24 @@ function stopExpansion(exp) {
   saveExp(exp, function () { releaseLock(); });
 }
 
-// Helper: advance to next question (interleaved mode)
-function advanceToNextQuestion(exp) {
-  exp.currentQ++;
-  exp.ambossTabId = null;
-  exp.claudeTabId = null;
-  exp.messageText = null;
-  exp.scrapeAttempts = 0;
-  if (exp.currentQ > exp.endQ) {
-    stopExpansion(exp);
-  } else {
-    exp.phase = "open-amboss";
-    saveExp(exp, function () { finishStep(2); });
-  }
-}
-
 // ── Phase handlers ──
+// Both modes share the same flow:
+//   1. Open all AMBOSS tabs at once
+//   2. Scrape them sequentially
+//   3. Send Claude tabs sequentially (rate-limited)
+// The only difference: "separate" opens Claude tabs in a new window,
+// "same-window" opens them in the current window.
 
 var PHASE_HANDLERS = {};
-
-// ══════════════════════════════
-// INTERLEAVED MODE
-// ══════════════════════════════
-
-PHASE_HANDLERS["open-amboss"] = function (exp) {
-  // Done check
-  if (exp.currentQ > exp.endQ) { stopExpansion(exp); return; }
-
-  chrome.tabs.create({ url: exp.baseUrl + exp.currentQ, active: false }, function (tab) {
-    if (chrome.runtime.lastError || !tab) {
-      // Tab creation failed -- skip this question
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-        advanceToNextQuestion(e);
-      });
-      return;
-    }
-    // Save the tab ID and move to wait-load
-    loadExp(function (e) {
-      if (!e || !e.running) { releaseLock(); return; }
-      e.ambossTabId = tab.id;
-      e.scrapeAttempts = 0;
-      e.phase = "wait-amboss-load";
-      saveExp(e, function () { finishStep(2); });
-    });
-  });
-};
-
-PHASE_HANDLERS["wait-amboss-load"] = function (exp) {
-  if (!exp.ambossTabId) {
-    // No tab to wait for -- skip question
-    advanceToNextQuestion(exp);
-    return;
-  }
-  chrome.tabs.get(exp.ambossTabId, function (tab) {
-    if (chrome.runtime.lastError || !tab) {
-      // Tab gone -- skip question
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-        advanceToNextQuestion(e);
-      });
-      return;
-    }
-    if (tab.status === "complete") {
-      // Tab loaded -- move to scrape after initial wait
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-        e.phase = "scrape";
-        e.scrapeAttempts = 0;
-        saveExp(e, function () { finishStep(C.EXPANSION_INITIAL_WAIT_MS / 1000); });
-      });
-    } else {
-      // Still loading -- poll again
-      finishStep(2);
-    }
-  });
-};
-
-PHASE_HANDLERS["scrape"] = function (exp) {
-  exp.scrapeAttempts = (exp.scrapeAttempts || 0) + 1;
-  var attempts = exp.scrapeAttempts;
-  var tabId = exp.ambossTabId;
-
-  saveExp(exp, function () {
-    doScrape(tabId, function (sc) {
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-
-        if (sc && sc.question) {
-          var skill = { prefix: e.skillPrefix };
-          e.messageText = TemplateEngine.buildMessage(skill, sc, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
-          e.phase = "check-rate-limit";
-          saveExp(e, function () { finishStep(1); });
-        } else if (attempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
-          e.phase = "scrape";
-          saveExp(e, function () { finishStep(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS / 1000); });
-        } else {
-          // Max retries -- skip question
-          advanceToNextQuestion(e);
-        }
-      });
-    });
-  });
-};
-
-PHASE_HANDLERS["check-rate-limit"] = function (exp) {
-  // Check if we have a rate limit slot. If not, wait and retry this phase.
-  loadState(function (queue, ts, cd) {
-    ts = pruneTs(ts, cd);
-    if (ts.length < C.MAX_CONCURRENT_REQUESTS) {
-      // Slot available -- record the timestamp and create the Claude tab
-      ts.push(Date.now());
-      saveState(queue, ts, function () {
-        loadExp(function (e) {
-          if (!e || !e.running) { releaseLock(); return; }
-          e.phase = "create-claude-tab";
-          saveExp(e, function () { finishStep(1); });
-        });
-      });
-    } else {
-      // Rate limited -- wait and retry
-      var delay = nextSlotDelay(ts, cd);
-      finishStep(Math.max(delay / 1000, 5));
-    }
-  });
-};
-
-PHASE_HANDLERS["create-claude-tab"] = function (exp) {
-  if (!exp.messageText) {
-    // No message -- skip (shouldn't happen but be safe)
-    advanceToNextQuestion(exp);
-    return;
-  }
-  // Create the Claude tab but DO NOT wait for it to load in this step.
-  // We just create it and save the tab ID. Next step polls for load.
-  chrome.tabs.create({ url: C.CLAUDE_NEW_CHAT_URL, active: false }, function (tab) {
-    if (chrome.runtime.lastError || !tab) {
-      // Tab creation failed -- skip the Claude tab for this question, advance
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-        advanceToNextQuestion(e);
-      });
-      return;
-    }
-    loadExp(function (e) {
-      if (!e || !e.running) { releaseLock(); return; }
-      e.claudeTabId = tab.id;
-      e.phase = "wait-claude-load";
-      e._claudeLoadPollCount = 0;
-      saveExp(e, function () { finishStep(2); });
-    });
-  });
-};
-
-PHASE_HANDLERS["wait-claude-load"] = function (exp) {
-  if (!exp.claudeTabId) {
-    advanceToNextQuestion(exp);
-    return;
-  }
-
-  exp._claudeLoadPollCount = (exp._claudeLoadPollCount || 0) + 1;
-
-  // Timeout: if we've polled too many times (~30s+ worth), inject anyway
-  if (exp._claudeLoadPollCount > 15) {
-    exp.phase = "inject-claude";
-    saveExp(exp, function () { finishStep(1); });
-    return;
-  }
-
-  chrome.tabs.get(exp.claudeTabId, function (tab) {
-    if (chrome.runtime.lastError || !tab) {
-      // Tab gone -- skip
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-        advanceToNextQuestion(e);
-      });
-      return;
-    }
-    if (tab.status === "complete") {
-      loadExp(function (e) {
-        if (!e || !e.running) { releaseLock(); return; }
-        e.phase = "inject-claude";
-        saveExp(e, function () { finishStep(C.CLAUDE_INJECT_DELAY_MS / 1000); });
-      });
-    } else {
-      // Still loading
-      saveExp(exp, function () { finishStep(2); });
-    }
-  });
-};
-
-PHASE_HANDLERS["inject-claude"] = function (exp) {
-  if (!exp.claudeTabId || !exp.messageText) {
-    advanceToNextQuestion(exp);
-    return;
-  }
-  // Send the inject message. This is fire-and-forget; the content script handles it.
-  chrome.tabs.sendMessage(exp.claudeTabId, { type: C.MSG_INJECT_AND_SUBMIT, text: exp.messageText }, function () {
-    // Ignore errors (tab might have navigated, content script not ready, etc.)
-    // The content script has its own retry logic.
-    void chrome.runtime.lastError;
-  });
-
-  // Advance to next question
-  advanceToNextQuestion(exp);
-};
 
 // "done" phase -- just stop
 PHASE_HANDLERS["done"] = function (exp) {
   stopExpansion(exp);
 };
 
-// ══════════════════════════════
-// SEPARATE WINDOW MODE
-// ══════════════════════════════
+// ── Phase 1: Open all AMBOSS tabs at once ──
 
-PHASE_HANDLERS["sep-open-all-tabs"] = function (exp) {
+PHASE_HANDLERS["open-all-tabs"] = function (exp) {
   var total = exp.endQ - exp.startQ + 1;
   var tabs = [];
   var opened = 0;
@@ -602,7 +403,7 @@ PHASE_HANDLERS["sep-open-all-tabs"] = function (exp) {
             if (!e || !e.running) { releaseLock(); return; }
             e.ambossTabIds = tabs;
             e.sepScrapeIndex = 0;
-            e.phase = "sep-wait-load";
+            e.phase = "wait-load";
             saveExp(e, function () { finishStep(3); });
           });
         }
@@ -611,9 +412,9 @@ PHASE_HANDLERS["sep-open-all-tabs"] = function (exp) {
   }
 };
 
-PHASE_HANDLERS["sep-wait-load"] = function (exp) {
+PHASE_HANDLERS["wait-load"] = function (exp) {
   if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
-    exp.phase = "sep-start-claude";
+    exp.phase = "start-claude";
     saveExp(exp, function () { finishStep(1); });
     return;
   }
@@ -624,7 +425,7 @@ PHASE_HANDLERS["sep-wait-load"] = function (exp) {
       loadExp(function (e) {
         if (!e || !e.running) { releaseLock(); return; }
         e.sepScrapeIndex++;
-        e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "sep-start-claude" : "sep-wait-load";
+        e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "start-claude" : "wait-load";
         saveExp(e, function () { finishStep(1); });
       });
       return;
@@ -632,7 +433,7 @@ PHASE_HANDLERS["sep-wait-load"] = function (exp) {
     if (tab.status === "complete") {
       loadExp(function (e) {
         if (!e || !e.running) { releaseLock(); return; }
-        e.phase = "sep-scrape";
+        e.phase = "scrape";
         e.scrapeAttempts = 0;
         saveExp(e, function () { finishStep(C.EXPANSION_INITIAL_WAIT_MS / 1000); });
       });
@@ -642,9 +443,9 @@ PHASE_HANDLERS["sep-wait-load"] = function (exp) {
   });
 };
 
-PHASE_HANDLERS["sep-scrape"] = function (exp) {
+PHASE_HANDLERS["scrape"] = function (exp) {
   if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
-    exp.phase = "sep-start-claude";
+    exp.phase = "start-claude";
     saveExp(exp, function () { finishStep(1); });
     return;
   }
@@ -664,15 +465,15 @@ PHASE_HANDLERS["sep-scrape"] = function (exp) {
           if (!e.scrapedMessages) e.scrapedMessages = [];
           e.scrapedMessages.push({ qNum: ti.qNum, text: msg });
           e.sepScrapeIndex++;
-          e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "sep-start-claude" : "sep-wait-load";
+          e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "start-claude" : "wait-load";
           saveExp(e, function () { finishStep(1); });
         } else if (attempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
-          e.phase = "sep-scrape";
+          e.phase = "scrape";
           saveExp(e, function () { finishStep(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS / 1000); });
         } else {
           // Max retries -- skip this question
           e.sepScrapeIndex++;
-          e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "sep-start-claude" : "sep-wait-load";
+          e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "start-claude" : "wait-load";
           saveExp(e, function () { finishStep(1); });
         }
       });
@@ -680,17 +481,17 @@ PHASE_HANDLERS["sep-scrape"] = function (exp) {
   });
 };
 
-PHASE_HANDLERS["sep-start-claude"] = function (exp) {
+PHASE_HANDLERS["start-claude"] = function (exp) {
   if (!exp.scrapedMessages || !exp.scrapedMessages.length) {
     stopExpansion(exp);
     return;
   }
   exp.claudeIndex = 0;
-  exp.phase = "sep-check-rate";
+  exp.phase = "check-rate";
   saveExp(exp, function () { finishStep(1); });
 };
 
-PHASE_HANDLERS["sep-check-rate"] = function (exp) {
+PHASE_HANDLERS["check-rate"] = function (exp) {
   if (exp.claudeIndex >= exp.scrapedMessages.length) {
     stopExpansion(exp);
     return;
@@ -703,7 +504,7 @@ PHASE_HANDLERS["sep-check-rate"] = function (exp) {
       saveState(queue, ts, function () {
         loadExp(function (e) {
           if (!e || !e.running) { releaseLock(); return; }
-          e.phase = "sep-create-claude";
+          e.phase = "create-claude";
           saveExp(e, function () { finishStep(1); });
         });
       });
@@ -714,18 +515,22 @@ PHASE_HANDLERS["sep-check-rate"] = function (exp) {
   });
 };
 
-PHASE_HANDLERS["sep-create-claude"] = function (exp) {
+PHASE_HANDLERS["create-claude"] = function (exp) {
   if (exp.claudeIndex >= exp.scrapedMessages.length) {
     stopExpansion(exp);
     return;
   }
 
+  var useSeparateWindow = exp.layout === C.EXPANSION_LAYOUT_SEPARATE;
   var opts = {};
-  if (exp.claudeWindowId) {
-    opts.windowId = exp.claudeWindowId;
-  } else {
-    opts.newWindow = true;
+  if (useSeparateWindow) {
+    if (exp.claudeWindowId) {
+      opts.windowId = exp.claudeWindowId;
+    } else {
+      opts.newWindow = true;
+    }
   }
+  // For same-window mode, opts stays empty (opens in current window)
 
   function doCreate() {
     if (opts.newWindow) {
@@ -735,7 +540,7 @@ PHASE_HANDLERS["sep-create-claude"] = function (exp) {
           loadExp(function (e) {
             if (!e || !e.running) { releaseLock(); return; }
             e.claudeIndex++;
-            e.phase = e.claudeIndex >= e.scrapedMessages.length ? "done" : "sep-check-rate";
+            e.phase = e.claudeIndex >= e.scrapedMessages.length ? "done" : "check-rate";
             saveExp(e, function () { finishStep(2); });
           });
           return;
@@ -745,7 +550,7 @@ PHASE_HANDLERS["sep-create-claude"] = function (exp) {
           if (!e || !e.running) { releaseLock(); return; }
           e.claudeWindowId = w.id;
           e.claudeTabId = tab.id;
-          e.phase = "sep-wait-claude-load";
+          e.phase = "wait-claude-load";
           e._claudeLoadPollCount = 0;
           saveExp(e, function () { finishStep(2); });
         });
@@ -757,7 +562,7 @@ PHASE_HANDLERS["sep-create-claude"] = function (exp) {
           loadExp(function (e) {
             if (!e || !e.running) { releaseLock(); return; }
             e.claudeWindowId = null;
-            e.phase = "sep-create-claude"; // retry with newWindow
+            e.phase = "create-claude"; // retry with newWindow
             saveExp(e, function () { finishStep(1); });
           });
           return;
@@ -765,7 +570,7 @@ PHASE_HANDLERS["sep-create-claude"] = function (exp) {
         loadExp(function (e) {
           if (!e || !e.running) { releaseLock(); return; }
           e.claudeTabId = tab.id;
-          e.phase = "sep-wait-claude-load";
+          e.phase = "wait-claude-load";
           e._claudeLoadPollCount = 0;
           saveExp(e, function () { finishStep(2); });
         });
@@ -776,11 +581,11 @@ PHASE_HANDLERS["sep-create-claude"] = function (exp) {
   doCreate();
 };
 
-PHASE_HANDLERS["sep-wait-claude-load"] = function (exp) {
+PHASE_HANDLERS["wait-claude-load"] = function (exp) {
   if (!exp.claudeTabId) {
     // No tab -- skip
     exp.claudeIndex++;
-    exp.phase = exp.claudeIndex >= exp.scrapedMessages.length ? "done" : "sep-check-rate";
+    exp.phase = exp.claudeIndex >= exp.scrapedMessages.length ? "done" : "check-rate";
     saveExp(exp, function () { finishStep(1); });
     return;
   }
@@ -789,7 +594,7 @@ PHASE_HANDLERS["sep-wait-claude-load"] = function (exp) {
 
   if (exp._claudeLoadPollCount > 15) {
     // Timeout -- inject anyway
-    exp.phase = "sep-inject-claude";
+    exp.phase = "inject-claude";
     saveExp(exp, function () { finishStep(1); });
     return;
   }
@@ -799,7 +604,7 @@ PHASE_HANDLERS["sep-wait-claude-load"] = function (exp) {
       loadExp(function (e) {
         if (!e || !e.running) { releaseLock(); return; }
         e.claudeIndex++;
-        e.phase = e.claudeIndex >= e.scrapedMessages.length ? "done" : "sep-check-rate";
+        e.phase = e.claudeIndex >= e.scrapedMessages.length ? "done" : "check-rate";
         saveExp(e, function () { finishStep(1); });
       });
       return;
@@ -807,7 +612,7 @@ PHASE_HANDLERS["sep-wait-claude-load"] = function (exp) {
     if (tab.status === "complete") {
       loadExp(function (e) {
         if (!e || !e.running) { releaseLock(); return; }
-        e.phase = "sep-inject-claude";
+        e.phase = "inject-claude";
         saveExp(e, function () { finishStep(C.CLAUDE_INJECT_DELAY_MS / 1000); });
       });
     } else {
@@ -816,7 +621,7 @@ PHASE_HANDLERS["sep-wait-claude-load"] = function (exp) {
   });
 };
 
-PHASE_HANDLERS["sep-inject-claude"] = function (exp) {
+PHASE_HANDLERS["inject-claude"] = function (exp) {
   var idx = exp.claudeIndex;
   if (idx >= exp.scrapedMessages.length) {
     stopExpansion(exp);
@@ -835,7 +640,7 @@ PHASE_HANDLERS["sep-inject-claude"] = function (exp) {
   if (exp.claudeIndex >= exp.scrapedMessages.length) {
     stopExpansion(exp);
   } else {
-    exp.phase = "sep-check-rate";
+    exp.phase = "check-rate";
     saveExp(exp, function () { finishStep(2); });
   }
 };

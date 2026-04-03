@@ -420,7 +420,7 @@
       return;
     }
 
-    var layoutLabel = expandLayout.value === C.EXPANSION_LAYOUT_SEPARATE ? " (separate window)" : " (interleaved)";
+    var layoutLabel = expandLayout.value === C.EXPANSION_LAYOUT_SEPARATE ? " (separate window)" : " (same window)";
     expandBtnLabel.textContent = "Generate " + count + " Question" + (count > 1 ? "s" : "") + layoutLabel;
 
     // Time estimate: first 3 are immediate, then batches of 3 with cooldown

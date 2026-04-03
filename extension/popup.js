@@ -20,6 +20,7 @@
   var autoGenerateSkillRow = document.getElementById("auto-generate-skill-row");
   var autoGenerateSkillSelect = document.getElementById("auto-generate-skill");
   var selectCooldown = document.getElementById("select-cooldown");
+  var selectDefaultSkill = document.getElementById("select-default-skill");
   var toggleAddonStem = document.getElementById("toggle-addon-stem");
   var toggleAddonWrong = document.getElementById("toggle-addon-wrong");
   var toggleAddonAllChoices = document.getElementById("toggle-addon-all-choices");
@@ -45,7 +46,8 @@
   function loadSettings() {
     chrome.storage.local.get(
       [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS, C.STORAGE_KEY_AUTO_GENERATE, C.STORAGE_KEY_AUTO_GENERATE_SKILL,
-       C.STORAGE_KEY_ADDON_STEM_CLUES, C.STORAGE_KEY_ADDON_WRONG_CHOICE, C.STORAGE_KEY_ADDON_ALL_CHOICES, C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS],
+       C.STORAGE_KEY_ADDON_STEM_CLUES, C.STORAGE_KEY_ADDON_WRONG_CHOICE, C.STORAGE_KEY_ADDON_ALL_CHOICES, C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS,
+       C.STORAGE_KEY_DEFAULT_SKILL],
       function (result) {
         if (chrome.runtime.lastError) return;
         toggleBackground.checked =
@@ -70,8 +72,21 @@
         toggleAddonAllChoices.checked = result[C.STORAGE_KEY_ADDON_ALL_CHOICES] !== undefined ? result[C.STORAGE_KEY_ADDON_ALL_CHOICES] : C.DEFAULT_ADDON_ALL_CHOICES;
         toggleIncludeChoiceExpl.checked = result[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] !== undefined ? result[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] : C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS;
         includeChoiceExplRow.classList.toggle("hidden", !toggleAddonAllChoices.checked);
+        // Default skill
+        if (result[C.STORAGE_KEY_DEFAULT_SKILL]) {
+          selectDefaultSkill.value = result[C.STORAGE_KEY_DEFAULT_SKILL];
+        }
       }
     );
+
+    // Populate default skill dropdown
+    C.SKILLS.forEach(function (skill) {
+      var opt = document.createElement("option");
+      opt.value = skill.id;
+      opt.textContent = skill.label;
+      if (skill.id === C.DEFAULT_SKILL_ID) opt.selected = true;
+      selectDefaultSkill.appendChild(opt);
+    });
 
     // Populate auto-generate skill dropdown
     C.SKILLS.forEach(function (skill) {
@@ -87,6 +102,12 @@
     toggleBackground.addEventListener("change", function () {
       var obj = {};
       obj[C.STORAGE_KEY_OPEN_IN_BACKGROUND] = toggleBackground.checked;
+      chrome.storage.local.set(obj);
+    });
+
+    selectDefaultSkill.addEventListener("change", function () {
+      var obj = {};
+      obj[C.STORAGE_KEY_DEFAULT_SKILL] = selectDefaultSkill.value;
       chrome.storage.local.set(obj);
     });
 

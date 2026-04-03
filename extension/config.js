@@ -35,6 +35,7 @@ var CONFIG = CONFIG || {
   SKILLS: [
     { id: "causal-explainer-brief-v2", label: "Causal Explainer (text + diagram)", prefix: "/causal-explainer-brief-v2 " },
     { id: "usmle-flowchart", label: "USMLE Flowchart (diagram only)", prefix: "/usmle-flowchart " },
+    { id: "step1-funnel-explainer", label: "Step 1 Funnel Explainer", prefix: "/step1-funnel-explainer " },
   ],
 
   // ── Prompt template ──
@@ -85,6 +86,7 @@ var CONFIG = CONFIG || {
   STORAGE_KEY_OPEN_IN_BACKGROUND: "openInBackground",
   STORAGE_KEY_AUTO_GENERATE: "autoGenerate",
   STORAGE_KEY_AUTO_GENERATE_SKILL: "autoGenerateSkill",
+  STORAGE_KEY_DEFAULT_SKILL: "defaultSkill",
   STORAGE_KEY_ADDON_STEM_CLUES: "addonStemClues",
   STORAGE_KEY_ADDON_WRONG_CHOICE: "addonWrongChoice",
   STORAGE_KEY_ADDON_ALL_CHOICES: "addonAllChoices",

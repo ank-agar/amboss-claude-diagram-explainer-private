@@ -1,10 +1,11 @@
 /**
  * background.js -- Background service worker
- * Context: Background (persists via one-shot alarms, survives restarts)
- * Design: Rate-limits sends to respect Claude.ai's 3 concurrent limit.
- *         Expansion uses a state machine driven by one-shot alarms
- *         (not periodic). Each step schedules the next alarm when done,
- *         preventing concurrent tick races entirely.
+ * Context: Background (persists via alarms, survives restarts)
+ * Design: Single-threaded expansion step function. Each call does ONE
+ *         thing, saves state, and calls scheduleNext(). No concurrent
+ *         execution possible because scheduleNext() always cancels any
+ *         pending timer/alarm before creating a new one, and the step
+ *         function has a simple boolean gate.
  */
 
 importScripts("config.js");
@@ -12,283 +13,208 @@ importScripts("template-engine.js");
 
 var C = CONFIG;
 var QUEUE_ALARM = "drain-queue";
-var EXPANSION_ALARM = "expansion-step";
+var STEP_ALARM = "exp-step";
 
 // ── State (always from storage) ──
 
-function loadState(callback) {
-  chrome.storage.local.get(
-    ["sendQueue", "sendTimestamps", C.STORAGE_KEY_COOLDOWN_MS],
-    function (result) {
-      if (chrome.runtime.lastError) { callback([], [], C.QUEUE_COOLDOWN_MS); return; }
-      callback(result.sendQueue || [], result.sendTimestamps || [], result[C.STORAGE_KEY_COOLDOWN_MS] || C.QUEUE_COOLDOWN_MS);
-    }
-  );
+function loadState(cb) {
+  chrome.storage.local.get(["sendQueue", "sendTimestamps", C.STORAGE_KEY_COOLDOWN_MS], function (r) {
+    if (chrome.runtime.lastError) { cb([], [], C.QUEUE_COOLDOWN_MS); return; }
+    cb(r.sendQueue || [], r.sendTimestamps || [], r[C.STORAGE_KEY_COOLDOWN_MS] || C.QUEUE_COOLDOWN_MS);
+  });
 }
 
 function saveState(queue, timestamps, cb) {
   chrome.storage.local.set({ sendQueue: queue, sendTimestamps: timestamps }, cb || function () {});
 }
 
+function loadExp(cb) {
+  chrome.storage.local.get(["expansion"], function (r) {
+    cb(r.expansion || null);
+  });
+}
+
+function saveExp(exp, cb) {
+  chrome.storage.local.set({ expansion: exp }, cb || function () {});
+}
+
 // ── Rate limiting ──
 
-function pruneTimestamps(ts, cooldown) {
-  var cutoff = Date.now() - cooldown;
+function pruneTs(ts, cd) {
+  var cutoff = Date.now() - cd;
   return ts.filter(function (t) { return t > cutoff; });
 }
 
-function getNextSlotDelayMs(ts, cooldown) {
-  var pruned = pruneTimestamps(ts, cooldown);
-  if (pruned.length < C.MAX_CONCURRENT_REQUESTS) return 0;
-  pruned.sort(function (a, b) { return a - b; });
-  return Math.max(0, pruned[0] + cooldown - Date.now());
+function nextSlotDelay(ts, cd) {
+  var p = pruneTs(ts, cd);
+  if (p.length < C.MAX_CONCURRENT_REQUESTS) return 0;
+  p.sort(function (a, b) { return a - b; });
+  return Math.max(0, p[0] + cd - Date.now());
 }
 
-// ── Open Claude tab ──
+// ── Open Claude tab, call back when injection is sent ──
 
-function openClaudeTab(text, inBackground, callback, options) {
-  options = options || {};
-
-  function onTabCreated(tab) {
+function openClaudeTab(text, inBg, cb, opts) {
+  opts = opts || {};
+  function onCreated(tab) {
     if (chrome.runtime.lastError) {
-      if (options.windowId) {
-        // Window may have been closed -- retry in a new window
-        options.windowId = null;
-        options.newWindow = true;
-        openClaudeTab(text, inBackground, callback, options);
-        return;
-      }
-      if (callback) callback(null, null);
-      return;
+      if (opts.windowId) { opts.windowId = null; opts.newWindow = true; openClaudeTab(text, inBg, cb, opts); return; }
+      if (cb) cb(null, null); return;
     }
-    var tabId = tab.id;
-    var windowId = tab.windowId;
-    var done = false;
-
-    var timeout = setTimeout(function () {
-      if (done) return; done = true;
-      chrome.tabs.onUpdated.removeListener(onLoad);
-      if (callback) callback(tabId, windowId);
-    }, C.TAB_LOAD_TIMEOUT_MS);
-
-    var onLoad = function (id, info) {
-      if (id !== tabId || info.status !== "complete") return;
-      if (done) return; done = true;
-      clearTimeout(timeout);
-      chrome.tabs.onUpdated.removeListener(onLoad);
-      setTimeout(function () {
-        chrome.tabs.sendMessage(tabId, { type: C.MSG_INJECT_AND_SUBMIT, text: text });
-        if (callback) callback(tabId, windowId);
-      }, C.CLAUDE_INJECT_DELAY_MS);
+    var id = tab.id, wid = tab.windowId, done = false;
+    var tm = setTimeout(function () { if (done) return; done = true; chrome.tabs.onUpdated.removeListener(fn); if (cb) cb(id, wid); }, C.TAB_LOAD_TIMEOUT_MS);
+    var fn = function (tid, info) {
+      if (tid !== id || info.status !== "complete") return;
+      if (done) return; done = true; clearTimeout(tm); chrome.tabs.onUpdated.removeListener(fn);
+      setTimeout(function () { chrome.tabs.sendMessage(id, { type: C.MSG_INJECT_AND_SUBMIT, text: text }); if (cb) cb(id, wid); }, C.CLAUDE_INJECT_DELAY_MS);
     };
-    chrome.tabs.onUpdated.addListener(onLoad);
+    chrome.tabs.onUpdated.addListener(fn);
   }
-
-  if (options.newWindow && !options.windowId) {
-    chrome.windows.create({ url: C.CLAUDE_NEW_CHAT_URL, focused: !inBackground }, function (win) {
-      if (chrome.runtime.lastError) { if (callback) callback(null, null); return; }
-      onTabCreated(win.tabs[0]);
+  if (opts.newWindow && !opts.windowId) {
+    chrome.windows.create({ url: C.CLAUDE_NEW_CHAT_URL, focused: !inBg }, function (w) {
+      if (chrome.runtime.lastError) { if (cb) cb(null, null); return; }
+      onCreated(w.tabs[0]);
     });
   } else {
-    var props = { url: C.CLAUDE_NEW_CHAT_URL, active: !inBackground };
-    if (options.windowId) props.windowId = options.windowId;
-    chrome.tabs.create(props, onTabCreated);
+    var p = { url: C.CLAUDE_NEW_CHAT_URL, active: !inBg };
+    if (opts.windowId) p.windowId = opts.windowId;
+    chrome.tabs.create(p, onCreated);
   }
 }
 
 // ── Queue drain ──
 
 function drainQueue() {
-  loadState(function (queue, ts, cooldown) {
-    ts = pruneTimestamps(ts, cooldown);
-    if (queue.length === 0) { saveState(queue, ts); chrome.alarms.clear(QUEUE_ALARM); return; }
-
+  loadState(function (queue, ts, cd) {
+    ts = pruneTs(ts, cd);
+    if (!queue.length) { saveState(queue, ts); chrome.alarms.clear(QUEUE_ALARM); return; }
     var slots = C.MAX_CONCURRENT_REQUESTS - ts.length;
     while (queue.length > 0 && slots > 0) {
-      var item = queue.shift();
-      ts.push(Date.now());
-      slots--;
+      var item = queue.shift(); ts.push(Date.now()); slots--;
       if (item.isExpansion) {
-        openClaudeTab(item.text, true, function () {
-          // Resume expansion only if still running
-          chrome.storage.local.get(["expansion"], function (r) {
-            if (r.expansion && r.expansion.running) {
-              advanceInterleaved(function () { scheduleExpansionStep(2000); });
-            }
+        (function (txt) {
+          openClaudeTab(txt, true, function () {
+            loadExp(function (exp) {
+              if (!exp || !exp.running) return;
+              exp.currentQ++; exp.phase = "open-amboss"; exp.ambossTabId = null; exp.messageText = null; exp.scrapeAttempts = 0;
+              if (exp.currentQ > exp.endQ) exp.running = false;
+              saveExp(exp, function () { if (exp.running) scheduleNext(2000); });
+            });
           });
-        });
+        })(item.text);
       } else {
         openClaudeTab(item.text, item.openInBackground);
       }
     }
-
     saveState(queue, ts, function () {
-      if (queue.length > 0) {
-        var delay = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
-        chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: delay });
-      }
+      if (queue.length > 0) { chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: Math.max(nextSlotDelay(ts, cd) / 60000, 0.5) }); }
     });
   });
 }
 
 // ── Alarms ──
-
-chrome.alarms.onAlarm.addListener(function (alarm) {
-  if (alarm.name === QUEUE_ALARM) drainQueue();
-  if (alarm.name === EXPANSION_ALARM) expansionStep();
+chrome.alarms.onAlarm.addListener(function (a) {
+  if (a.name === QUEUE_ALARM) drainQueue();
+  if (a.name === STEP_ALARM) step();
 });
+drainQueue();
+scheduleNext(2000); // check for in-progress expansion on startup
 
-drainQueue(); // on startup
-// Also check if expansion was in progress on startup
-scheduleExpansionStep(1000);
+// ── Step scheduling: ONLY ONE pending step ever ──
 
-// ── Schedule next expansion step ──
-// Only one pending step at a time. New schedules cancel the previous one.
+var stepTimer = null;
+var stepping = false;
 
-var pendingStepTimer = null;
-
-function scheduleExpansionStep(delayMs) {
-  // Release the execution lock so the next step can run
-  expansionStepRunning = false;
-
-  // Cancel any previously scheduled step
-  if (pendingStepTimer !== null) {
-    clearTimeout(pendingStepTimer);
-    pendingStepTimer = null;
-  }
-  chrome.alarms.clear(EXPANSION_ALARM);
-
-  if (delayMs < 30000) {
-    pendingStepTimer = setTimeout(function () {
-      pendingStepTimer = null;
-      expansionStep();
-    }, delayMs);
+function scheduleNext(ms) {
+  stepping = false;
+  if (stepTimer !== null) { clearTimeout(stepTimer); stepTimer = null; }
+  chrome.alarms.clear(STEP_ALARM);
+  if (ms < 25000) {
+    stepTimer = setTimeout(function () { stepTimer = null; step(); }, ms);
   } else {
-    chrome.alarms.create(EXPANSION_ALARM, { delayInMinutes: delayMs / 60000 });
+    chrome.alarms.create(STEP_ALARM, { delayInMinutes: Math.max(ms / 60000, 0.5) });
   }
 }
 
 // ── Messages ──
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
-
-  // ── Auto-generate: triggered by content script when user answers a question ──
   if (msg.type === C.MSG_AUTO_GENERATE_TRIGGERED) {
-    var tabId = sender.tab ? sender.tab.id : null;
-    if (!tabId) return false;
-
-    // Load the auto-generate skill preference
-    chrome.storage.local.get(
-      [C.STORAGE_KEY_AUTO_GENERATE_SKILL],
-      function (result) {
-        var skillId = result[C.STORAGE_KEY_AUTO_GENERATE_SKILL] || C.DEFAULT_AUTO_GENERATE_SKILL;
-        var skill = C.SKILLS.find(function (s) { return s.id === skillId; }) || C.SKILLS[0];
-
-        // Scrape the AMBOSS tab
-        doScrape(tabId, function (scraped) {
-          if (!scraped || !scraped.question) {
-            // Retry once after a delay (SPA might not have rendered explanations yet)
-            setTimeout(function () {
-              doScrape(tabId, function (scraped2) {
-                if (!scraped2 || !scraped2.question) return;
-                sendAutoGenerate(skill, scraped2);
-              });
-            }, 3000);
-            return;
-          }
-          sendAutoGenerate(skill, scraped);
-        });
-      }
-    );
+    var tid = sender.tab ? sender.tab.id : null;
+    if (!tid) return false;
+    chrome.storage.local.get([C.STORAGE_KEY_AUTO_GENERATE_SKILL], function (r) {
+      var sid = r[C.STORAGE_KEY_AUTO_GENERATE_SKILL] || C.DEFAULT_AUTO_GENERATE_SKILL;
+      var skill = C.SKILLS.find(function (s) { return s.id === sid; }) || C.SKILLS[0];
+      doScrape(tid, function (sc) {
+        if (!sc || !sc.question) { setTimeout(function () { doScrape(tid, function (sc2) { if (sc2 && sc2.question) queueClaude(skill, sc2); }); }, 3000); return; }
+        queueClaude(skill, sc);
+      });
+    });
     return false;
   }
 
   if (msg.type === C.MSG_OPEN_AND_INJECT) {
-    if (!msg.text || typeof msg.text !== "string") {
-      sendResponse({ success: false, error: "Missing message text" }); return false;
-    }
-    loadState(function (queue, ts, cooldown) {
-      ts = pruneTimestamps(ts, cooldown);
-      if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
-        ts.push(Date.now());
-        saveState(queue, ts);
-        openClaudeTab(msg.text, !!msg.openInBackground);
+    if (!msg.text || typeof msg.text !== "string") { sendResponse({ success: false, error: "Missing text" }); return false; }
+    loadState(function (q, ts, cd) {
+      ts = pruneTs(ts, cd);
+      if (ts.length < C.MAX_CONCURRENT_REQUESTS && !q.length) {
+        ts.push(Date.now()); saveState(q, ts); openClaudeTab(msg.text, !!msg.openInBackground);
         sendResponse({ success: true, queued: false, message: "Sending now..." });
       } else {
-        queue.push({ text: msg.text, openInBackground: !!msg.openInBackground, addedAt: Date.now() });
-        saveState(queue, ts, function () {
-          var d = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
-          chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: d });
-        });
-        sendResponse({ success: true, queued: true, position: queue.length,
-          message: "Queued (#" + queue.length + "). Sends in ~" + Math.ceil(getNextSlotDelayMs(ts, cooldown) / 60000) + " min." });
+        q.push({ text: msg.text, openInBackground: !!msg.openInBackground, addedAt: Date.now() });
+        saveState(q, ts, function () { chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: Math.max(nextSlotDelay(ts, cd) / 60000, 0.5) }); });
+        sendResponse({ success: true, queued: true, position: q.length, message: "Queued (#" + q.length + ")." });
       }
     });
     return true;
   }
 
   if (msg.type === C.MSG_GET_QUEUE_STATUS) {
-    loadState(function (queue, ts, cooldown) {
-      ts = pruneTimestamps(ts, cooldown);
-      sendResponse({
-        queueLength: queue.length, recentSends: ts.length,
-        maxConcurrent: C.MAX_CONCURRENT_REQUESTS,
-        canSendNow: ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0,
-        nextSlotInMs: getNextSlotDelayMs(ts, cooldown), cooldownMs: cooldown,
-      });
+    loadState(function (q, ts, cd) {
+      ts = pruneTs(ts, cd);
+      sendResponse({ queueLength: q.length, recentSends: ts.length, maxConcurrent: C.MAX_CONCURRENT_REQUESTS, canSendNow: ts.length < C.MAX_CONCURRENT_REQUESTS && !q.length, nextSlotInMs: nextSlotDelay(ts, cd), cooldownMs: cd });
     });
     return true;
   }
 
   if (msg.type === "reset-all-state") {
-    chrome.storage.local.set({ sendQueue: [], sendTimestamps: [], expansion: null }, function () {
-      chrome.alarms.clearAll();
-      sendResponse({ success: true });
-    });
+    chrome.storage.local.set({ sendQueue: [], sendTimestamps: [], expansion: null }, function () { chrome.alarms.clearAll(); sendResponse({ success: true }); });
     return true;
   }
-
-  // ── Expansion messages ──
 
   if (msg.type === C.MSG_START_EXPANSION) {
     var layout = msg.layout || C.EXPANSION_LAYOUT_INTERLEAVED;
     var exp = {
       baseUrl: msg.baseUrl, startQ: msg.startQ, endQ: msg.endQ,
       currentQ: msg.startQ, skillPrefix: msg.skillPrefix,
-      openInBackground: !!msg.openInBackground, running: true,
-      layout: layout,
+      openInBackground: !!msg.openInBackground, running: true, layout: layout,
       phase: layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss",
       ambossTabId: null, scrapeAttempts: 0, messageText: null,
-      scrapedMessages: [],
-      claudeWindowId: null,
-      claudeIndex: 0,
+      scrapedMessages: [], claudeWindowId: null, claudeIndex: 0,
+      ambossTabIds: null, sepScrapeIndex: 0,
     };
-    // Clear any queued expansion items from a previous expansion
-    chrome.storage.local.get(["sendQueue"], function (qResult) {
-      var cleanQueue = (qResult.sendQueue || []).filter(function (item) { return !item.isExpansion; });
-      chrome.storage.local.set({ expansion: exp, sendQueue: cleanQueue }, function () {
-      sendResponse({ success: true, message: "Expanding " + (exp.endQ - exp.startQ + 1) + " questions..." });
-      scheduleExpansionStep(500);
+    chrome.storage.local.get(["sendQueue"], function (qr) {
+      var cq = (qr.sendQueue || []).filter(function (i) { return !i.isExpansion; });
+      chrome.storage.local.set({ expansion: exp, sendQueue: cq }, function () {
+        sendResponse({ success: true, message: "Expanding " + (exp.endQ - exp.startQ + 1) + " questions..." });
+        scheduleNext(300);
       });
     });
     return true;
   }
 
   if (msg.type === C.MSG_GET_EXPANSION_STATUS) {
-    chrome.storage.local.get(["expansion"], function (result) {
-      var e = result.expansion;
+    loadExp(function (e) {
       sendResponse(e && e.running ? { running: true, currentQ: e.currentQ, endQ: e.endQ, startQ: e.startQ, phase: e.phase } : { running: false });
     });
     return true;
   }
 
   if (msg.type === C.MSG_STOP_EXPANSION) {
-    chrome.storage.local.get(["expansion"], function (result) {
-      if (result.expansion) {
-        result.expansion.running = false;
-        chrome.storage.local.set({ expansion: result.expansion });
-      }
-      chrome.alarms.clear(EXPANSION_ALARM);
+    loadExp(function (e) {
+      if (e) { e.running = false; saveExp(e); }
+      chrome.alarms.clear(STEP_ALARM);
+      if (stepTimer) { clearTimeout(stepTimer); stepTimer = null; }
       sendResponse({ success: true });
     });
     return true;
@@ -297,325 +223,102 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   return false;
 });
 
-// ══════════════════════════════════════════
-// ── EXPANSION STATE MACHINE ──
-// One step at a time. Each step re-reads state from storage,
-// does one operation, saves, and schedules the next step.
-// No concurrent ticks possible because we use one-shot scheduling.
-// ══════════════════════════════════════════
+// ── Helpers ──
 
-var expansionStepRunning = false;
+function queueClaude(skill, scraped) {
+  var text = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
+  loadState(function (q, ts, cd) {
+    ts = pruneTs(ts, cd);
+    if (ts.length < C.MAX_CONCURRENT_REQUESTS && !q.length) {
+      ts.push(Date.now()); saveState(q, ts); openClaudeTab(text, true);
+    } else {
+      q.push({ text: text, openInBackground: true, addedAt: Date.now() });
+      saveState(q, ts, function () { chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: Math.max(nextSlotDelay(ts, cd) / 60000, 0.5) }); });
+    }
+  });
+}
 
-function expansionStep() {
-  if (expansionStepRunning) return; // prevent concurrent execution
-  expansionStepRunning = true;
+function doScrape(tabId, cb) {
+  chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["config.js"] }, function () {
+    if (chrome.runtime.lastError) { cb(null); return; }
+    chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["scraper.js"] }, function (r) {
+      if (chrome.runtime.lastError) { cb(null); return; }
+      cb(r && r[0] && r[0].result);
+    });
+  });
+}
 
-  chrome.storage.local.get(["expansion"], function (result) {
-    var exp = result.expansion;
-    if (!exp || !exp.running) { expansionStepRunning = false; return; }
-    console.log("[expansion] phase=" + exp.phase + " q=" + exp.currentQ + "/" + exp.endQ + " layout=" + exp.layout);
+// ══════════════════════════════════════
+// EXPANSION STATE MACHINE
+// Single step() function. Always:
+//   1. Acquire lock (stepping=true)
+//   2. Read exp from storage
+//   3. Do ONE thing
+//   4. Save exp
+//   5. Call scheduleNext() which releases lock
+// Every code path MUST end in scheduleNext() or set stepping=false.
+// ══════════════════════════════════════
+
+function step() {
+  if (stepping) return;
+  stepping = true;
+
+  loadExp(function (exp) {
+    if (!exp || !exp.running) { stepping = false; return; }
+
+    console.log("[exp] phase=" + exp.phase + " q=" + exp.currentQ + "/" + exp.endQ + " layout=" + exp.layout);
+
+    // Done check
     if (exp.currentQ > exp.endQ && exp.phase !== "sep-start-claude" && exp.phase !== "sep-send-claude") {
-      exp.running = false;
-      chrome.storage.local.set({ expansion: exp });
-      expansionStepRunning = false;
-      return;
+      exp.running = false; saveExp(exp); stepping = false; return;
     }
 
-    // Guard: if phase is "busy", a previous async op is still in flight.
-    // This can happen if the worker restarted mid-operation.
-    // Recover by going back to a safe phase.
-    if (exp.phase === "busy") {
-      // Recover to a safe phase. For separate mode, if tabs are already open, go to scrape phase.
-      if (exp.layout === C.EXPANSION_LAYOUT_SEPARATE) {
-        exp.phase = (exp.ambossTabIds && exp.ambossTabIds.length > 0) ? "sep-wait-tabs-load" : "sep-open-all-tabs";
-      } else {
-        exp.phase = "open-amboss";
-      }
-      chrome.storage.local.set({ expansion: exp }, function () {
-        scheduleExpansionStep(2000);
-      });
-      return;
-    }
-
-    // ══════════════════════════════
-    // INTERLEAVED MODE
-    // ══════════════════════════════
-
+    // ── INTERLEAVED: open-amboss ──
     if (exp.phase === "open-amboss") {
-      exp.phase = "busy";
-      chrome.storage.local.set({ expansion: exp }, function () {
-        chrome.tabs.create({ url: exp.baseUrl + exp.currentQ, active: false }, function (tab) {
-          if (chrome.runtime.lastError) {
-            advanceInterleaved(function () { scheduleExpansionStep(1000); });
-            return;
-          }
-          updateExpansion({ ambossTabId: tab.id, phase: "wait-load", scrapeAttempts: 0 }, function () {
-            scheduleExpansionStep(2000);
-          });
-        });
+      chrome.tabs.create({ url: exp.baseUrl + exp.currentQ, active: false }, function (tab) {
+        if (chrome.runtime.lastError) {
+          loadExp(function (e) { if (!e || !e.running) { stepping = false; return; } e.currentQ++; e.phase = e.currentQ > e.endQ ? "done" : "open-amboss"; saveExp(e, function () { scheduleNext(1000); }); });
+          return;
+        }
+        loadExp(function (e) { if (!e || !e.running) { stepping = false; return; } e.ambossTabId = tab.id; e.phase = "wait-load"; e.scrapeAttempts = 0; saveExp(e, function () { scheduleNext(2000); }); });
       });
       return;
     }
 
+    // ── INTERLEAVED: wait-load ──
     if (exp.phase === "wait-load") {
       chrome.tabs.get(exp.ambossTabId, function (tab) {
         if (chrome.runtime.lastError || !tab) {
-          advanceInterleaved(function () { scheduleExpansionStep(1000); });
+          loadExp(function (e) { if (!e || !e.running) { stepping = false; return; } e.currentQ++; e.phase = e.currentQ > e.endQ ? "done" : "open-amboss"; saveExp(e, function () { scheduleNext(1000); }); });
           return;
         }
         if (tab.status === "complete") {
-          updateExpansion({ phase: "scrape" }, function () {
-            scheduleExpansionStep(C.EXPANSION_INITIAL_WAIT_MS);
-          });
+          loadExp(function (e) { if (!e) { stepping = false; return; } e.phase = "scrape"; saveExp(e, function () { scheduleNext(C.EXPANSION_INITIAL_WAIT_MS); }); });
         } else {
-          scheduleExpansionStep(2000);
+          scheduleNext(2000);
         }
       });
       return;
     }
 
+    // ── INTERLEAVED: scrape ──
     if (exp.phase === "scrape") {
-      exp.phase = "busy";
       exp.scrapeAttempts++;
-      chrome.storage.local.set({ expansion: exp }, function () {
-        doScrape(exp.ambossTabId, function (scraped) {
-          if (scraped && scraped.question) {
-            var skill = { prefix: exp.skillPrefix };
-            var msg = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
-            updateExpansion({ messageText: msg, phase: "send-claude" }, function () {
-              scheduleExpansionStep(500);
-            });
-          } else {
-            handleScrapeRetry();
-          }
-        });
-      });
-      return;
-    }
-
-    if (exp.phase === "send-claude") {
-      exp.phase = "busy";
-      chrome.storage.local.set({ expansion: exp }, function () {
-        loadState(function (queue, ts, cooldown) {
-          ts = pruneTimestamps(ts, cooldown);
-          if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
-            ts.push(Date.now());
-            saveState(queue, ts);
-            // Re-read messageText from storage (not stale closure)
-            chrome.storage.local.get(["expansion"], function (r) {
-              var e = r.expansion;
-              if (!e || !e.running || !e.messageText) {
-                scheduleExpansionStep(2000);
-                return;
-              }
-              openClaudeTab(e.messageText, true, function () {
-                advanceInterleaved(function () { scheduleExpansionStep(2000); });
-              });
-            });
-          } else {
-            // Queue it
-            chrome.storage.local.get(["expansion"], function (r) {
-              var e = r.expansion;
-              if (!e || !e.messageText) return;
-              queue.push({ text: e.messageText, openInBackground: true, addedAt: Date.now(), isExpansion: true });
-              e.messageText = null;
-              e.phase = "waiting-queue";
-              chrome.storage.local.set({ expansion: e });
-              saveState(queue, ts, function () {
-                var d = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
-                chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: d });
-              });
-            });
-            // drainQueue will call scheduleExpansionStep when it sends the item
-          }
-        });
-      });
-      return;
-    }
-
-    if (exp.phase === "waiting-queue") {
-      // drainQueue will resume us via scheduleExpansionStep
-      // But schedule a safety check in case we missed it
-      scheduleExpansionStep(15000);
-      return;
-    }
-
-    // ══════════════════════════════
-    // SEPARATE WINDOW MODE
-    // Phase 1a: Open ALL AMBOSS tabs at once (instant)
-    // Phase 1b: Scrape them sequentially (need to wait for SPA render)
-    // Phase 2: Open Claude window + send all
-    // ══════════════════════════════
-
-    if (exp.phase === "sep-open-all-tabs") {
-      exp.phase = "busy";
-      chrome.storage.local.set({ expansion: exp }, function () {
-        // Open all AMBOSS tabs at once
-        var tabIds = [];
-        var opened = 0;
-        var total = exp.endQ - exp.startQ + 1;
-
-        for (var q = exp.startQ; q <= exp.endQ; q++) {
-          (function (qNum) {
-            chrome.tabs.create({ url: exp.baseUrl + qNum, active: false }, function (tab) {
-              opened++;
-              if (!chrome.runtime.lastError && tab) {
-                tabIds.push({ qNum: qNum, tabId: tab.id });
-              }
-              if (opened === total) {
-                // All tabs opened -- sort by question number and save
-                tabIds.sort(function (a, b) { return a.qNum - b.qNum; });
-                updateExpansion({
-                  ambossTabIds: tabIds,
-                  sepScrapeIndex: 0,
-                  phase: "sep-wait-tabs-load",
-                }, function () {
-                  // Give tabs time to start loading
-                  scheduleExpansionStep(3000);
-                });
-              }
-            });
-          })(q);
-        }
-      });
-      return;
-    }
-
-    if (exp.phase === "sep-wait-tabs-load") {
-      // Check if the current tab to scrape has loaded
-      if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
-        updateExpansion({ phase: "sep-start-claude" }, function () {
-          scheduleExpansionStep(500);
-        });
-        return;
-      }
-      var tabInfo = exp.ambossTabIds[exp.sepScrapeIndex];
-      chrome.tabs.get(tabInfo.tabId, function (tab) {
-        if (chrome.runtime.lastError || !tab) {
-          // Tab gone, skip to next
-          updateExpansion({ sepScrapeIndex: exp.sepScrapeIndex + 1 }, function () {
-            scheduleExpansionStep(1000);
-          });
-          return;
-        }
-        if (tab.status === "complete") {
-          updateExpansion({ phase: "sep-scrape", scrapeAttempts: 0 }, function () {
-            scheduleExpansionStep(C.EXPANSION_INITIAL_WAIT_MS);
-          });
-        } else {
-          scheduleExpansionStep(2000);
-        }
-      });
-      return;
-    }
-
-    if (exp.phase === "sep-scrape") {
-      if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
-        updateExpansion({ phase: "sep-start-claude" }, function () {
-          scheduleExpansionStep(500);
-        });
-        return;
-      }
-      exp.phase = "busy";
-      exp.scrapeAttempts++;
-      chrome.storage.local.set({ expansion: exp }, function () {
-        var tabInfo = exp.ambossTabIds[exp.sepScrapeIndex];
-        doScrape(tabInfo.tabId, function (scraped) {
-          if (scraped && scraped.question) {
-            chrome.storage.local.get(["expansion"], function (r) {
-              var e = r.expansion;
-              if (!e || !e.running) return;
+      saveExp(exp, function () {
+        doScrape(exp.ambossTabId, function (sc) {
+          loadExp(function (e) {
+            if (!e || !e.running) { stepping = false; return; }
+            if (sc && sc.question) {
               var skill = { prefix: e.skillPrefix };
-              var msg = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
-              if (!e.scrapedMessages) e.scrapedMessages = [];
-              e.scrapedMessages.push({ qNum: tabInfo.qNum, text: msg });
-              e.sepScrapeIndex++;
-              e.phase = (e.sepScrapeIndex >= e.ambossTabIds.length) ? "sep-start-claude" : "sep-wait-tabs-load";
-              chrome.storage.local.set({ expansion: e }, function () {
-                scheduleExpansionStep(500);
-              });
-            });
-          } else {
-            handleScrapeRetry();
-          }
-        });
-      });
-      return;
-    }
-
-    if (exp.phase === "sep-start-claude") {
-      chrome.storage.local.get(["expansion"], function (r) {
-        var e = r.expansion;
-        if (!e || !e.scrapedMessages || e.scrapedMessages.length === 0) {
-          e.running = false;
-          chrome.storage.local.set({ expansion: e });
-          return;
-        }
-        e.claudeIndex = 0;
-        e.phase = "sep-send-claude";
-        chrome.storage.local.set({ expansion: e }, function () {
-          scheduleExpansionStep(500);
-        });
-      });
-      return;
-    }
-
-    if (exp.phase === "sep-send-claude") {
-      // Re-read fresh state
-      chrome.storage.local.get(["expansion"], function (r) {
-        var e = r.expansion;
-        if (!e || !e.running) return;
-        if (e.claudeIndex >= e.scrapedMessages.length) {
-          e.running = false;
-          chrome.storage.local.set({ expansion: e });
-          return;
-        }
-
-        e.phase = "busy";
-        chrome.storage.local.set({ expansion: e }, function () {
-          loadState(function (queue, ts, cooldown) {
-            ts = pruneTimestamps(ts, cooldown);
-            if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
-              ts.push(Date.now());
-              saveState(queue, ts);
-
-              // Re-read to get fresh claudeIndex and claudeWindowId
-              chrome.storage.local.get(["expansion"], function (r2) {
-                var e2 = r2.expansion;
-                if (!e2 || !e2.running) return;
-
-                var msgText = e2.scrapedMessages[e2.claudeIndex].text;
-                var opts = {};
-                if (e2.claudeWindowId) {
-                  opts.windowId = e2.claudeWindowId;
-                } else {
-                  opts.newWindow = true;
-                }
-
-                openClaudeTab(msgText, true, function (tabId, windowId) {
-                  chrome.storage.local.get(["expansion"], function (r3) {
-                    var e3 = r3.expansion;
-                    if (!e3 || !e3.running) return;
-                    // Always update windowId (in case window was recreated)
-                    if (windowId) e3.claudeWindowId = windowId;
-                    e3.claudeIndex++;
-                    e3.phase = "sep-send-claude";
-                    chrome.storage.local.set({ expansion: e3 }, function () {
-                      scheduleExpansionStep(2000);
-                    });
-                  });
-                }, opts);
-              });
+              e.messageText = TemplateEngine.buildMessage(skill, sc, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
+              e.phase = "send-claude";
+              saveExp(e, function () { scheduleNext(500); });
+            } else if (e.scrapeAttempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
+              e.phase = "scrape";
+              saveExp(e, function () { scheduleNext(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS); });
             } else {
-              // No slot -- wait for cooldown
-              var delayMs = getNextSlotDelayMs(ts, cooldown);
-              chrome.storage.local.get(["expansion"], function (r2) {
-                var e2 = r2.expansion;
-                if (!e2 || !e2.running) return;
-                e2.phase = "sep-send-claude";
-                chrome.storage.local.set({ expansion: e2 });
-              });
-              scheduleExpansionStep(Math.max(delayMs, 5000));
+              e.currentQ++; e.phase = e.currentQ > e.endQ ? "done" : "open-amboss"; e.scrapeAttempts = 0;
+              saveExp(e, function () { scheduleNext(1000); });
             }
           });
         });
@@ -623,103 +326,177 @@ function expansionStep() {
       return;
     }
 
-    // Unknown/stuck phase -- recover
-    var defaultPhase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss";
-    exp.phase = defaultPhase;
-    chrome.storage.local.set({ expansion: exp }, function () {
-      scheduleExpansionStep(2000);
-    });
-  });
-}
-
-// ── Helpers ──
-
-/**
- * Send an auto-generated diagram request through the rate-limited queue.
- * Always opens in the background so the user stays on AMBOSS.
- */
-function sendAutoGenerate(skill, scraped) {
-  var messageText = TemplateEngine.buildMessage(
-    skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE
-  );
-
-  // Route through the same queue system as manual sends
-  loadState(function (queue, ts, cooldown) {
-    ts = pruneTimestamps(ts, cooldown);
-    if (ts.length < C.MAX_CONCURRENT_REQUESTS && queue.length === 0) {
-      ts.push(Date.now());
-      saveState(queue, ts);
-      openClaudeTab(messageText, true);
-    } else {
-      queue.push({ text: messageText, openInBackground: true, addedAt: Date.now() });
-      saveState(queue, ts, function () {
-        var d = Math.max(getNextSlotDelayMs(ts, cooldown) / 60000, 0.5);
-        chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: d });
+    // ── INTERLEAVED: send-claude ──
+    if (exp.phase === "send-claude") {
+      loadState(function (queue, ts, cd) {
+        ts = pruneTs(ts, cd);
+        if (ts.length < C.MAX_CONCURRENT_REQUESTS && !queue.length) {
+          ts.push(Date.now()); saveState(queue, ts);
+          loadExp(function (e) {
+            if (!e || !e.running || !e.messageText) { stepping = false; return; }
+            var txt = e.messageText;
+            openClaudeTab(txt, true, function () {
+              loadExp(function (e2) {
+                if (!e2 || !e2.running) { stepping = false; return; }
+                e2.currentQ++; e2.phase = e2.currentQ > e2.endQ ? "done" : "open-amboss";
+                e2.ambossTabId = null; e2.messageText = null; e2.scrapeAttempts = 0;
+                saveExp(e2, function () { scheduleNext(2000); });
+              });
+            });
+          });
+        } else {
+          // Queue it -- drainQueue will advance the expansion
+          loadExp(function (e) {
+            if (!e || !e.messageText) { stepping = false; return; }
+            queue.push({ text: e.messageText, openInBackground: true, addedAt: Date.now(), isExpansion: true });
+            e.messageText = null; e.phase = "waiting-queue";
+            saveExp(e, function () {
+              saveState(queue, ts, function () {
+                chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: Math.max(nextSlotDelay(ts, cd) / 60000, 0.5) });
+                stepping = false; // drainQueue will call scheduleNext
+              });
+            });
+          });
+        }
       });
+      return;
     }
-  });
-}
 
-function doScrape(tabId, callback) {
-  chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["config.js"] }, function () {
-    if (chrome.runtime.lastError) { callback(null); return; }
-    chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["scraper.js"] }, function (results) {
-      if (chrome.runtime.lastError) { callback(null); return; }
-      callback(results && results[0] && results[0].result);
-    });
-  });
-}
-
-function updateExpansion(fields, callback) {
-  chrome.storage.local.get(["expansion"], function (result) {
-    var exp = result.expansion;
-    if (!exp) { if (callback) callback(); return; }
-    for (var key in fields) {
-      if (fields.hasOwnProperty(key)) exp[key] = fields[key];
+    // ── INTERLEAVED: waiting-queue ──
+    if (exp.phase === "waiting-queue") {
+      // drainQueue will resume. Safety poll.
+      scheduleNext(15000);
+      return;
     }
-    chrome.storage.local.set({ expansion: exp }, callback || function () {});
-  });
-}
 
-function advanceInterleaved(callback) {
-  chrome.storage.local.get(["expansion"], function (result) {
-    var exp = result.expansion;
-    if (!exp) { if (callback) callback(); return; }
-    exp.currentQ++;
-    exp.phase = "open-amboss";
-    exp.ambossTabId = null;
-    exp.messageText = null;
-    exp.scrapeAttempts = 0;
-    if (exp.currentQ > exp.endQ) {
-      exp.running = false;
+    // ── INTERLEAVED: done ──
+    if (exp.phase === "done") {
+      exp.running = false; saveExp(exp); stepping = false; return;
     }
-    chrome.storage.local.set({ expansion: exp }, callback || function () {});
-  });
-}
 
+    // ══════════════════════════════
+    // SEPARATE WINDOW MODE
+    // ══════════════════════════════
 
-
-function handleScrapeRetry() {
-  chrome.storage.local.get(["expansion"], function (result) {
-    var e = result.expansion;
-    if (!e || !e.running) return;
-    if (e.scrapeAttempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
-      e.phase = e.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-scrape" : "scrape";
-      chrome.storage.local.set({ expansion: e }, function () {
-        scheduleExpansionStep(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS);
-      });
-    } else {
-      // Skip this question
-      if (e.layout === C.EXPANSION_LAYOUT_SEPARATE) {
-        // Advance to next tab in the list
-        e.sepScrapeIndex = (e.sepScrapeIndex || 0) + 1;
-        e.phase = (e.ambossTabIds && e.sepScrapeIndex >= e.ambossTabIds.length) ? "sep-start-claude" : "sep-wait-tabs-load";
-        chrome.storage.local.set({ expansion: e }, function () {
-          scheduleExpansionStep(1000);
-        });
-      } else {
-        advanceInterleaved(function () { scheduleExpansionStep(1000); });
+    // ── SEP: open all tabs at once ──
+    if (exp.phase === "sep-open-all-tabs") {
+      var tabs = [], opened = 0, total = exp.endQ - exp.startQ + 1;
+      for (var q = exp.startQ; q <= exp.endQ; q++) {
+        (function (qn) {
+          chrome.tabs.create({ url: exp.baseUrl + qn, active: false }, function (tab) {
+            opened++;
+            if (!chrome.runtime.lastError && tab) tabs.push({ qNum: qn, tabId: tab.id });
+            if (opened === total) {
+              tabs.sort(function (a, b) { return a.qNum - b.qNum; });
+              loadExp(function (e) {
+                if (!e || !e.running) { stepping = false; return; }
+                e.ambossTabIds = tabs; e.sepScrapeIndex = 0; e.phase = "sep-wait-load";
+                saveExp(e, function () { scheduleNext(3000); });
+              });
+            }
+          });
+        })(q);
       }
+      return;
     }
+
+    // ── SEP: wait for current tab to load ──
+    if (exp.phase === "sep-wait-load") {
+      if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
+        exp.phase = "sep-start-claude"; saveExp(exp, function () { scheduleNext(500); }); return;
+      }
+      var ti = exp.ambossTabIds[exp.sepScrapeIndex];
+      chrome.tabs.get(ti.tabId, function (tab) {
+        if (chrome.runtime.lastError || !tab) {
+          loadExp(function (e) { if (!e) { stepping = false; return; } e.sepScrapeIndex++; e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "sep-start-claude" : "sep-wait-load"; saveExp(e, function () { scheduleNext(1000); }); });
+          return;
+        }
+        if (tab.status === "complete") {
+          loadExp(function (e) { if (!e) { stepping = false; return; } e.phase = "sep-scrape"; e.scrapeAttempts = 0; saveExp(e, function () { scheduleNext(C.EXPANSION_INITIAL_WAIT_MS); }); });
+        } else {
+          scheduleNext(2000);
+        }
+      });
+      return;
+    }
+
+    // ── SEP: scrape current tab ──
+    if (exp.phase === "sep-scrape") {
+      if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
+        exp.phase = "sep-start-claude"; saveExp(exp, function () { scheduleNext(500); }); return;
+      }
+      exp.scrapeAttempts++;
+      saveExp(exp, function () {
+        var ti = exp.ambossTabIds[exp.sepScrapeIndex];
+        doScrape(ti.tabId, function (sc) {
+          loadExp(function (e) {
+            if (!e || !e.running) { stepping = false; return; }
+            if (sc && sc.question) {
+              var skill = { prefix: e.skillPrefix };
+              var msg = TemplateEngine.buildMessage(skill, sc, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
+              if (!e.scrapedMessages) e.scrapedMessages = [];
+              e.scrapedMessages.push({ qNum: ti.qNum, text: msg });
+              e.sepScrapeIndex++;
+              e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "sep-start-claude" : "sep-wait-load";
+              saveExp(e, function () { scheduleNext(500); });
+            } else if (e.scrapeAttempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
+              e.phase = "sep-scrape";
+              saveExp(e, function () { scheduleNext(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS); });
+            } else {
+              e.sepScrapeIndex++;
+              e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "sep-start-claude" : "sep-wait-load";
+              saveExp(e, function () { scheduleNext(1000); });
+            }
+          });
+        });
+      });
+      return;
+    }
+
+    // ── SEP: start sending claude tabs ──
+    if (exp.phase === "sep-start-claude") {
+      loadExp(function (e) {
+        if (!e || !e.scrapedMessages || !e.scrapedMessages.length) { e.running = false; saveExp(e); stepping = false; return; }
+        e.claudeIndex = 0; e.phase = "sep-send-claude";
+        saveExp(e, function () { scheduleNext(500); });
+      });
+      return;
+    }
+
+    // ── SEP: send one claude tab ──
+    if (exp.phase === "sep-send-claude") {
+      loadExp(function (e) {
+        if (!e || !e.running) { stepping = false; return; }
+        if (e.claudeIndex >= e.scrapedMessages.length) { e.running = false; saveExp(e); stepping = false; return; }
+
+        loadState(function (queue, ts, cd) {
+          ts = pruneTs(ts, cd);
+          if (ts.length < C.MAX_CONCURRENT_REQUESTS && !queue.length) {
+            ts.push(Date.now()); saveState(queue, ts);
+            var txt = e.scrapedMessages[e.claudeIndex].text;
+            var opts = {};
+            if (e.claudeWindowId) opts.windowId = e.claudeWindowId; else opts.newWindow = true;
+            openClaudeTab(txt, true, function (tabId, wid) {
+              loadExp(function (e2) {
+                if (!e2 || !e2.running) { stepping = false; return; }
+                if (wid) e2.claudeWindowId = wid;
+                e2.claudeIndex++; e2.phase = "sep-send-claude";
+                saveExp(e2, function () { scheduleNext(2000); });
+              });
+            }, opts);
+          } else {
+            var delay = nextSlotDelay(ts, cd);
+            e.phase = "sep-send-claude"; // stay in same phase
+            saveExp(e, function () { scheduleNext(Math.max(delay, 5000)); });
+          }
+        });
+      });
+      return;
+    }
+
+    // ── Unknown phase: recover ──
+    console.warn("[exp] unknown phase: " + exp.phase + ", recovering");
+    exp.phase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss";
+    saveExp(exp, function () { scheduleNext(2000); });
   });
 }

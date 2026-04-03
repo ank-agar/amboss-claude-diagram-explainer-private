@@ -142,12 +142,27 @@ drainQueue(); // on startup
 // Also check if expansion was in progress on startup
 scheduleExpansionStep(1000);
 
-// ── Schedule next expansion step (one-shot, prevents concurrent ticks) ──
+// ── Schedule next expansion step ──
+// Only one pending step at a time. New schedules cancel the previous one.
+
+var pendingStepTimer = null;
 
 function scheduleExpansionStep(delayMs) {
-  // Use setTimeout for short delays (<30s), alarm for longer
+  // Release the execution lock so the next step can run
+  expansionStepRunning = false;
+
+  // Cancel any previously scheduled step
+  if (pendingStepTimer !== null) {
+    clearTimeout(pendingStepTimer);
+    pendingStepTimer = null;
+  }
+  chrome.alarms.clear(EXPANSION_ALARM);
+
   if (delayMs < 30000) {
-    setTimeout(expansionStep, delayMs);
+    pendingStepTimer = setTimeout(function () {
+      pendingStepTimer = null;
+      expansionStep();
+    }, delayMs);
   } else {
     chrome.alarms.create(EXPANSION_ALARM, { delayInMinutes: delayMs / 60000 });
   }
@@ -289,14 +304,20 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 // No concurrent ticks possible because we use one-shot scheduling.
 // ══════════════════════════════════════════
 
+var expansionStepRunning = false;
+
 function expansionStep() {
+  if (expansionStepRunning) return; // prevent concurrent execution
+  expansionStepRunning = true;
+
   chrome.storage.local.get(["expansion"], function (result) {
     var exp = result.expansion;
-    if (!exp || !exp.running) return;
+    if (!exp || !exp.running) { expansionStepRunning = false; return; }
     console.log("[expansion] phase=" + exp.phase + " q=" + exp.currentQ + "/" + exp.endQ + " layout=" + exp.layout);
     if (exp.currentQ > exp.endQ && exp.phase !== "sep-start-claude" && exp.phase !== "sep-send-claude") {
       exp.running = false;
       chrome.storage.local.set({ expansion: exp });
+      expansionStepRunning = false;
       return;
     }
 

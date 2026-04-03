@@ -284,15 +284,17 @@ function handleAutoGenRetry() {
 }
 
 function queueClaude(skill, scraped) {
-  var text = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
-  loadState(function (q, ts, cd) {
-    ts = pruneTs(ts, cd);
-    if (ts.length < C.MAX_CONCURRENT_REQUESTS && !q.length) {
-      ts.push(Date.now()); saveState(q, ts); openClaudeTab(text, true);
-    } else {
-      q.push({ text: text, openInBackground: true, addedAt: Date.now() });
-      saveState(q, ts, function () { chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: Math.max(nextSlotDelay(ts, cd) / 60000, 0.5) }); });
-    }
+  TemplateEngine.loadAddonSettings(function (addons) {
+    var text = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE, addons);
+    loadState(function (q, ts, cd) {
+      ts = pruneTs(ts, cd);
+      if (ts.length < C.MAX_CONCURRENT_REQUESTS && !q.length) {
+        ts.push(Date.now()); saveState(q, ts); openClaudeTab(text, true);
+      } else {
+        q.push({ text: text, openInBackground: true, addedAt: Date.now() });
+        saveState(q, ts, function () { chrome.alarms.create(QUEUE_ALARM, { delayInMinutes: Math.max(nextSlotDelay(ts, cd) / 60000, 0.5) }); });
+      }
+    });
   });
 }
 
@@ -461,12 +463,14 @@ PHASE_HANDLERS["scrape"] = function (exp) {
 
         if (sc && sc.question) {
           var skill = { prefix: e.skillPrefix };
-          var msg = TemplateEngine.buildMessage(skill, sc, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
-          if (!e.scrapedMessages) e.scrapedMessages = [];
-          e.scrapedMessages.push({ qNum: ti.qNum, text: msg });
-          e.sepScrapeIndex++;
-          e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "start-claude" : "wait-load";
-          saveExp(e, function () { finishStep(1); });
+          TemplateEngine.loadAddonSettings(function (addons) {
+            var msg = TemplateEngine.buildMessage(skill, sc, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE, addons);
+            if (!e.scrapedMessages) e.scrapedMessages = [];
+            e.scrapedMessages.push({ qNum: ti.qNum, text: msg });
+            e.sepScrapeIndex++;
+            e.phase = e.sepScrapeIndex >= e.ambossTabIds.length ? "start-claude" : "wait-load";
+            saveExp(e, function () { finishStep(1); });
+          });
         } else if (attempts < C.EXPANSION_SCRAPE_MAX_RETRIES) {
           e.phase = "scrape";
           saveExp(e, function () { finishStep(C.EXPANSION_SCRAPE_RETRY_INTERVAL_MS / 1000); });

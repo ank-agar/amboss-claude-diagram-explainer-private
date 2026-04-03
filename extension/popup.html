@@ -86,6 +86,20 @@
     <!-- Section 4: Settings -->
     <div class="section-card">
       <div class="section-title">Settings</div>
+      <div class="section-subtitle">Prompt add-ons (applies to all modes)</div>
+      <label class="toggle-row">
+        <span>Explain what from the stem gives away the diagnosis</span>
+        <input type="checkbox" id="toggle-addon-stem">
+      </label>
+      <label class="toggle-row">
+        <span>Explain why my wrong answer was wrong</span>
+        <input type="checkbox" id="toggle-addon-wrong">
+      </label>
+      <label class="toggle-row">
+        <span>Analyze every answer choice vs the stem</span>
+        <input type="checkbox" id="toggle-addon-all-choices">
+      </label>
+      <div class="section-subtitle" style="margin-top: 8px;">Rate limiting</div>
       <label class="setting-row">
         <span>Cooldown (per 3 sends)</span>
         <select id="select-cooldown">

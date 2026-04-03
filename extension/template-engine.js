@@ -54,7 +54,8 @@ var TemplateEngine = (function () {
    * @param {string} wrongChoiceTemplate - Template for wrong choice addendum
    * @returns {string} The complete message to paste into Claude
    */
-  function buildMessage(skill, scraped, promptTemplate, wrongChoiceTemplate) {
+  function buildMessage(skill, scraped, promptTemplate, wrongChoiceTemplate, addonSettings) {
+    addonSettings = addonSettings || {};
     // Build the answer choices text
     var allAnswers = "";
     var answerKeys = Object.keys(scraped.answers || {});
@@ -81,12 +82,27 @@ var TemplateEngine = (function () {
       });
     }
 
+    // Build prompt addons based on toggle settings
+    var addons = [];
+    var C = typeof CONFIG !== "undefined" ? CONFIG : {};
+    if (addonSettings.stemClues) {
+      addons.push(C.PROMPT_ADDON_STEM_CLUES || "");
+    }
+    if (addonSettings.wrongChoice && scraped.userWrongChoice) {
+      addons.push(C.PROMPT_ADDON_WRONG_CHOICE_EXPLANATION || "");
+    }
+    if (addonSettings.allChoices) {
+      addons.push(C.PROMPT_ADDON_ALL_CHOICES_ANALYSIS || "");
+    }
+    var promptAddons = addons.join("\n\n");
+
     // Render the main template
     return render(promptTemplate, {
       skillPrefix: skill.prefix,
       questionNum: scraped.questionNum || "",
       question: scraped.question || "",
       attendingTip: scraped.attendingTip || "",
+      promptAddons: promptAddons,
       correctAnswer: correctAnswer,
       explanation: scraped.explanation || "",
       allAnswers: allAnswers,
@@ -94,9 +110,38 @@ var TemplateEngine = (function () {
     });
   }
 
+  /**
+   * Load addon toggle settings from chrome.storage.local.
+   * Returns defaults if storage is unavailable.
+   */
+  function loadAddonSettings(callback) {
+    var C = typeof CONFIG !== "undefined" ? CONFIG : {};
+    var keys = [
+      C.STORAGE_KEY_ADDON_STEM_CLUES || "addonStemClues",
+      C.STORAGE_KEY_ADDON_WRONG_CHOICE || "addonWrongChoice",
+      C.STORAGE_KEY_ADDON_ALL_CHOICES || "addonAllChoices",
+    ];
+    if (typeof chrome !== "undefined" && chrome.storage) {
+      chrome.storage.local.get(keys, function (result) {
+        callback({
+          stemClues: result[keys[0]] !== undefined ? result[keys[0]] : (C.DEFAULT_ADDON_STEM_CLUES !== undefined ? C.DEFAULT_ADDON_STEM_CLUES : true),
+          wrongChoice: result[keys[1]] !== undefined ? result[keys[1]] : (C.DEFAULT_ADDON_WRONG_CHOICE !== undefined ? C.DEFAULT_ADDON_WRONG_CHOICE : true),
+          allChoices: result[keys[2]] !== undefined ? result[keys[2]] : (C.DEFAULT_ADDON_ALL_CHOICES !== undefined ? C.DEFAULT_ADDON_ALL_CHOICES : false),
+        });
+      });
+    } else {
+      callback({
+        stemClues: C.DEFAULT_ADDON_STEM_CLUES !== undefined ? C.DEFAULT_ADDON_STEM_CLUES : true,
+        wrongChoice: C.DEFAULT_ADDON_WRONG_CHOICE !== undefined ? C.DEFAULT_ADDON_WRONG_CHOICE : true,
+        allChoices: C.DEFAULT_ADDON_ALL_CHOICES !== undefined ? C.DEFAULT_ADDON_ALL_CHOICES : false,
+      });
+    }
+  }
+
   return {
     render: render,
     buildMessage: buildMessage,
+    loadAddonSettings: loadAddonSettings,
   };
 })();
 

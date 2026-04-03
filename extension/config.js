@@ -66,18 +66,28 @@ var CONFIG = CONFIG || {
     "",
     "{{wrongChoiceSection}}",
     "{{/if}}",
+    "{{#if promptAddons}}",
     "",
-    "And after explaining all that, answer this: what from the question stem gives away that the patient has the specific condition that they have?",
+    "{{promptAddons}}",
+    "{{/if}}",
   ].join("\n"),
 
   // Template for the wrong-choice addendum (used when user got it wrong)
   WRONG_CHOICE_TEMPLATE: "Also make a separate output/diagram for what this other choice is and why it's wrong: {{wrongChoice}}{{#if wrongExplanation}} and here's the official explanation of what it is/why it's wrong so you include that in your diagram/output as well: {{wrongExplanation}}{{/if}}",
+
+  // ── Toggleable prompt addons ──
+  PROMPT_ADDON_STEM_CLUES: "After explaining all that, answer this: what specific clues from the question stem give away that the patient has this particular condition? List each clue and explain why it points to this diagnosis.",
+  PROMPT_ADDON_WRONG_CHOICE_EXPLANATION: "Also explain why the answer choice I selected was wrong, and what about the question stem should have helped me rule it out.",
+  PROMPT_ADDON_ALL_CHOICES_ANALYSIS: "For each answer choice, briefly explain what the condition/concept is, and identify what specific details from the question stem help rule it in or rule it out as the correct answer.",
 
   // ── Storage keys ──
   STORAGE_KEY_SELECTED_SKILL: "selectedSkill",
   STORAGE_KEY_OPEN_IN_BACKGROUND: "openInBackground",
   STORAGE_KEY_AUTO_GENERATE: "autoGenerate",
   STORAGE_KEY_AUTO_GENERATE_SKILL: "autoGenerateSkill",
+  STORAGE_KEY_ADDON_STEM_CLUES: "addonStemClues",
+  STORAGE_KEY_ADDON_WRONG_CHOICE: "addonWrongChoice",
+  STORAGE_KEY_ADDON_ALL_CHOICES: "addonAllChoices",
   STORAGE_KEY_EXPANSION_LAYOUT: "expansionLayout",
   STORAGE_KEY_COOLDOWN_MS: "cooldownMs",
   STORAGE_KEY_PROMPT_TEMPLATE: "promptTemplate",
@@ -86,6 +96,9 @@ var CONFIG = CONFIG || {
   // ── Defaults ──
   DEFAULT_SKILL_ID: "causal-explainer-brief-v2",
   DEFAULT_OPEN_IN_BACKGROUND: false,
+  DEFAULT_ADDON_STEM_CLUES: true,
+  DEFAULT_ADDON_WRONG_CHOICE: true,
+  DEFAULT_ADDON_ALL_CHOICES: false,
   DEFAULT_AUTO_GENERATE: false,
   DEFAULT_AUTO_GENERATE_SKILL: "causal-explainer-brief-v2",
 

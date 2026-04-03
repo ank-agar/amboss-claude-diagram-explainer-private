@@ -20,6 +20,9 @@
   var autoGenerateSkillRow = document.getElementById("auto-generate-skill-row");
   var autoGenerateSkillSelect = document.getElementById("auto-generate-skill");
   var selectCooldown = document.getElementById("select-cooldown");
+  var toggleAddonStem = document.getElementById("toggle-addon-stem");
+  var toggleAddonWrong = document.getElementById("toggle-addon-wrong");
+  var toggleAddonAllChoices = document.getElementById("toggle-addon-all-choices");
   var queueInfo = document.getElementById("queue-info");
   var openDebugLink = document.getElementById("open-debug");
 
@@ -39,7 +42,8 @@
   // ── Settings ──
   function loadSettings() {
     chrome.storage.local.get(
-      [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS, C.STORAGE_KEY_AUTO_GENERATE, C.STORAGE_KEY_AUTO_GENERATE_SKILL],
+      [C.STORAGE_KEY_OPEN_IN_BACKGROUND, C.STORAGE_KEY_COOLDOWN_MS, C.STORAGE_KEY_AUTO_GENERATE, C.STORAGE_KEY_AUTO_GENERATE_SKILL,
+       C.STORAGE_KEY_ADDON_STEM_CLUES, C.STORAGE_KEY_ADDON_WRONG_CHOICE, C.STORAGE_KEY_ADDON_ALL_CHOICES],
       function (result) {
         if (chrome.runtime.lastError) return;
         toggleBackground.checked =
@@ -58,6 +62,10 @@
         if (result[C.STORAGE_KEY_AUTO_GENERATE_SKILL]) {
           autoGenerateSkillSelect.value = result[C.STORAGE_KEY_AUTO_GENERATE_SKILL];
         }
+        // Prompt add-ons
+        toggleAddonStem.checked = result[C.STORAGE_KEY_ADDON_STEM_CLUES] !== undefined ? result[C.STORAGE_KEY_ADDON_STEM_CLUES] : C.DEFAULT_ADDON_STEM_CLUES;
+        toggleAddonWrong.checked = result[C.STORAGE_KEY_ADDON_WRONG_CHOICE] !== undefined ? result[C.STORAGE_KEY_ADDON_WRONG_CHOICE] : C.DEFAULT_ADDON_WRONG_CHOICE;
+        toggleAddonAllChoices.checked = result[C.STORAGE_KEY_ADDON_ALL_CHOICES] !== undefined ? result[C.STORAGE_KEY_ADDON_ALL_CHOICES] : C.DEFAULT_ADDON_ALL_CHOICES;
       }
     );
 
@@ -95,6 +103,23 @@
       var obj = {};
       obj[C.STORAGE_KEY_AUTO_GENERATE_SKILL] = autoGenerateSkillSelect.value;
       chrome.storage.local.set(obj);
+    });
+
+    // Prompt add-on toggles
+    toggleAddonStem.addEventListener("change", function () {
+      var obj = {}; obj[C.STORAGE_KEY_ADDON_STEM_CLUES] = toggleAddonStem.checked;
+      chrome.storage.local.set(obj);
+      cachedAddonSettings = null; // invalidate cache
+    });
+    toggleAddonWrong.addEventListener("change", function () {
+      var obj = {}; obj[C.STORAGE_KEY_ADDON_WRONG_CHOICE] = toggleAddonWrong.checked;
+      chrome.storage.local.set(obj);
+      cachedAddonSettings = null;
+    });
+    toggleAddonAllChoices.addEventListener("change", function () {
+      var obj = {}; obj[C.STORAGE_KEY_ADDON_ALL_CHOICES] = toggleAddonAllChoices.checked;
+      chrome.storage.local.set(obj);
+      cachedAddonSettings = null;
     });
 
     openDebugLink.addEventListener("click", function (e) {
@@ -264,9 +289,10 @@
   // Templates can be customized via storage; falls back to CONFIG defaults
   var cachedPromptTemplate = null;
   var cachedWrongChoiceTemplate = null;
+  var cachedAddonSettings = null;
 
   function loadTemplates(callback) {
-    if (cachedPromptTemplate !== null) {
+    if (cachedPromptTemplate !== null && cachedAddonSettings !== null) {
       callback();
       return;
     }
@@ -276,14 +302,17 @@
         if (chrome.runtime.lastError) { /* use defaults */ }
         cachedPromptTemplate = result[C.STORAGE_KEY_PROMPT_TEMPLATE] || C.PROMPT_TEMPLATE;
         cachedWrongChoiceTemplate = result[C.STORAGE_KEY_WRONG_CHOICE_TEMPLATE] || C.WRONG_CHOICE_TEMPLATE;
-        callback();
+        TemplateEngine.loadAddonSettings(function (addons) {
+          cachedAddonSettings = addons;
+          callback();
+        });
       }
     );
   }
 
   function buildMessageText(skill, scraped) {
     return TemplateEngine.buildMessage(
-      skill, scraped, cachedPromptTemplate, cachedWrongChoiceTemplate
+      skill, scraped, cachedPromptTemplate, cachedWrongChoiceTemplate, cachedAddonSettings
     );
   }
 

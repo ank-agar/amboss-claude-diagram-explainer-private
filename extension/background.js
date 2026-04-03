@@ -242,7 +242,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       currentQ: msg.startQ, skillPrefix: msg.skillPrefix,
       openInBackground: !!msg.openInBackground, running: true,
       layout: layout,
-      phase: layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-amboss" : "open-amboss",
+      phase: layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss",
       ambossTabId: null, scrapeAttempts: 0, messageText: null,
       scrapedMessages: [],
       claudeWindowId: null,
@@ -304,7 +304,12 @@ function expansionStep() {
     // This can happen if the worker restarted mid-operation.
     // Recover by going back to a safe phase.
     if (exp.phase === "busy") {
-      exp.phase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-amboss" : "open-amboss";
+      // Recover to a safe phase. For separate mode, if tabs are already open, go to scrape phase.
+      if (exp.layout === C.EXPANSION_LAYOUT_SEPARATE) {
+        exp.phase = (exp.ambossTabIds && exp.ambossTabIds.length > 0) ? "sep-wait-tabs-load" : "sep-open-all-tabs";
+      } else {
+        exp.phase = "open-amboss";
+      }
       chrome.storage.local.set({ expansion: exp }, function () {
         scheduleExpansionStep(2000);
       });
@@ -416,34 +421,64 @@ function expansionStep() {
 
     // ══════════════════════════════
     // SEPARATE WINDOW MODE
-    // Phase 1: Open all AMBOSS tabs + scrape
+    // Phase 1a: Open ALL AMBOSS tabs at once (instant)
+    // Phase 1b: Scrape them sequentially (need to wait for SPA render)
     // Phase 2: Open Claude window + send all
     // ══════════════════════════════
 
-    if (exp.phase === "sep-open-amboss") {
+    if (exp.phase === "sep-open-all-tabs") {
       exp.phase = "busy";
       chrome.storage.local.set({ expansion: exp }, function () {
-        chrome.tabs.create({ url: exp.baseUrl + exp.currentQ, active: false }, function (tab) {
-          if (chrome.runtime.lastError) {
-            advanceSepAmboss(function () { scheduleExpansionStep(1000); });
-            return;
-          }
-          updateExpansion({ ambossTabId: tab.id, phase: "sep-wait-load", scrapeAttempts: 0 }, function () {
-            scheduleExpansionStep(2000);
-          });
-        });
+        // Open all AMBOSS tabs at once
+        var tabIds = [];
+        var opened = 0;
+        var total = exp.endQ - exp.startQ + 1;
+
+        for (var q = exp.startQ; q <= exp.endQ; q++) {
+          (function (qNum) {
+            chrome.tabs.create({ url: exp.baseUrl + qNum, active: false }, function (tab) {
+              opened++;
+              if (!chrome.runtime.lastError && tab) {
+                tabIds.push({ qNum: qNum, tabId: tab.id });
+              }
+              if (opened === total) {
+                // All tabs opened -- sort by question number and save
+                tabIds.sort(function (a, b) { return a.qNum - b.qNum; });
+                updateExpansion({
+                  ambossTabIds: tabIds,
+                  sepScrapeIndex: 0,
+                  phase: "sep-wait-tabs-load",
+                }, function () {
+                  // Give tabs time to start loading
+                  scheduleExpansionStep(3000);
+                });
+              }
+            });
+          })(q);
+        }
       });
       return;
     }
 
-    if (exp.phase === "sep-wait-load") {
-      chrome.tabs.get(exp.ambossTabId, function (tab) {
+    if (exp.phase === "sep-wait-tabs-load") {
+      // Check if the current tab to scrape has loaded
+      if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
+        updateExpansion({ phase: "sep-start-claude" }, function () {
+          scheduleExpansionStep(500);
+        });
+        return;
+      }
+      var tabInfo = exp.ambossTabIds[exp.sepScrapeIndex];
+      chrome.tabs.get(tabInfo.tabId, function (tab) {
         if (chrome.runtime.lastError || !tab) {
-          advanceSepAmboss(function () { scheduleExpansionStep(1000); });
+          // Tab gone, skip to next
+          updateExpansion({ sepScrapeIndex: exp.sepScrapeIndex + 1 }, function () {
+            scheduleExpansionStep(1000);
+          });
           return;
         }
         if (tab.status === "complete") {
-          updateExpansion({ phase: "sep-scrape" }, function () {
+          updateExpansion({ phase: "sep-scrape", scrapeAttempts: 0 }, function () {
             scheduleExpansionStep(C.EXPANSION_INITIAL_WAIT_MS);
           });
         } else {
@@ -454,24 +489,29 @@ function expansionStep() {
     }
 
     if (exp.phase === "sep-scrape") {
+      if (!exp.ambossTabIds || exp.sepScrapeIndex >= exp.ambossTabIds.length) {
+        updateExpansion({ phase: "sep-start-claude" }, function () {
+          scheduleExpansionStep(500);
+        });
+        return;
+      }
       exp.phase = "busy";
       exp.scrapeAttempts++;
       chrome.storage.local.set({ expansion: exp }, function () {
-        doScrape(exp.ambossTabId, function (scraped) {
+        var tabInfo = exp.ambossTabIds[exp.sepScrapeIndex];
+        doScrape(tabInfo.tabId, function (scraped) {
           if (scraped && scraped.question) {
-            // Store scraped message and advance to next AMBOSS question
             chrome.storage.local.get(["expansion"], function (r) {
               var e = r.expansion;
               if (!e || !e.running) return;
               var skill = { prefix: e.skillPrefix };
               var msg = TemplateEngine.buildMessage(skill, scraped, C.PROMPT_TEMPLATE, C.WRONG_CHOICE_TEMPLATE);
               if (!e.scrapedMessages) e.scrapedMessages = [];
-              e.scrapedMessages.push({ qNum: e.currentQ, text: msg });
-              e.currentQ++;
-              e.phase = (e.currentQ > e.endQ) ? "sep-start-claude" : "sep-open-amboss";
-              e.ambossTabId = null;
+              e.scrapedMessages.push({ qNum: tabInfo.qNum, text: msg });
+              e.sepScrapeIndex++;
+              e.phase = (e.sepScrapeIndex >= e.ambossTabIds.length) ? "sep-start-claude" : "sep-wait-tabs-load";
               chrome.storage.local.set({ expansion: e }, function () {
-                scheduleExpansionStep(1000);
+                scheduleExpansionStep(500);
               });
             });
           } else {
@@ -563,7 +603,7 @@ function expansionStep() {
     }
 
     // Unknown/stuck phase -- recover
-    var defaultPhase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-amboss" : "open-amboss";
+    var defaultPhase = exp.layout === C.EXPANSION_LAYOUT_SEPARATE ? "sep-open-all-tabs" : "open-amboss";
     exp.phase = defaultPhase;
     chrome.storage.local.set({ expansion: exp }, function () {
       scheduleExpansionStep(2000);
@@ -636,17 +676,7 @@ function advanceInterleaved(callback) {
   });
 }
 
-function advanceSepAmboss(callback) {
-  chrome.storage.local.get(["expansion"], function (result) {
-    var exp = result.expansion;
-    if (!exp) { if (callback) callback(); return; }
-    exp.currentQ++;
-    exp.phase = (exp.currentQ > exp.endQ) ? "sep-start-claude" : "sep-open-amboss";
-    exp.ambossTabId = null;
-    exp.scrapeAttempts = 0;
-    chrome.storage.local.set({ expansion: exp }, callback || function () {});
-  });
-}
+
 
 function handleScrapeRetry() {
   chrome.storage.local.get(["expansion"], function (result) {
@@ -660,7 +690,12 @@ function handleScrapeRetry() {
     } else {
       // Skip this question
       if (e.layout === C.EXPANSION_LAYOUT_SEPARATE) {
-        advanceSepAmboss(function () { scheduleExpansionStep(1000); });
+        // Advance to next tab in the list
+        e.sepScrapeIndex = (e.sepScrapeIndex || 0) + 1;
+        e.phase = (e.ambossTabIds && e.sepScrapeIndex >= e.ambossTabIds.length) ? "sep-start-claude" : "sep-wait-tabs-load";
+        chrome.storage.local.set({ expansion: e }, function () {
+          scheduleExpansionStep(1000);
+        });
       } else {
         advanceInterleaved(function () { scheduleExpansionStep(1000); });
       }

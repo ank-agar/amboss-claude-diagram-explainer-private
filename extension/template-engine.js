@@ -58,7 +58,7 @@ var TemplateEngine = (function () {
     addonSettings = addonSettings || {};
     // Build the answer choices text
     var allAnswers = "";
-    var includeExpl = addonSettings.includeChoiceExplanations && addonSettings.allChoices;
+    var includeExpl = addonSettings.includeChoiceExplanations;
     var answerKeys = Object.keys(scraped.answers || {});
     if (answerKeys.length > 0) {
       allAnswers = answerKeys.map(function (letter) {

@@ -24,7 +24,6 @@
   var toggleAddonStem = document.getElementById("toggle-addon-stem");
   var toggleAddonWrong = document.getElementById("toggle-addon-wrong");
   var toggleAddonAllChoices = document.getElementById("toggle-addon-all-choices");
-  var includeChoiceExplRow = document.getElementById("include-choice-explanations-row");
   var toggleIncludeChoiceExpl = document.getElementById("toggle-include-choice-explanations");
   var queueInfo = document.getElementById("queue-info");
   var openDebugLink = document.getElementById("open-debug");
@@ -71,7 +70,6 @@
         toggleAddonWrong.checked = result[C.STORAGE_KEY_ADDON_WRONG_CHOICE] !== undefined ? result[C.STORAGE_KEY_ADDON_WRONG_CHOICE] : C.DEFAULT_ADDON_WRONG_CHOICE;
         toggleAddonAllChoices.checked = result[C.STORAGE_KEY_ADDON_ALL_CHOICES] !== undefined ? result[C.STORAGE_KEY_ADDON_ALL_CHOICES] : C.DEFAULT_ADDON_ALL_CHOICES;
         toggleIncludeChoiceExpl.checked = result[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] !== undefined ? result[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] : C.DEFAULT_INCLUDE_CHOICE_EXPLANATIONS;
-        includeChoiceExplRow.classList.toggle("hidden", !toggleAddonAllChoices.checked);
         // Default skill
         if (result[C.STORAGE_KEY_DEFAULT_SKILL]) {
           selectDefaultSkill.value = result[C.STORAGE_KEY_DEFAULT_SKILL];
@@ -145,7 +143,6 @@
       var obj = {}; obj[C.STORAGE_KEY_ADDON_ALL_CHOICES] = toggleAddonAllChoices.checked;
       chrome.storage.local.set(obj);
       cachedAddonSettings = null;
-      includeChoiceExplRow.classList.toggle("hidden", !toggleAddonAllChoices.checked);
     });
     toggleIncludeChoiceExpl.addEventListener("change", function () {
       var obj = {}; obj[C.STORAGE_KEY_INCLUDE_CHOICE_EXPLANATIONS] = toggleIncludeChoiceExpl.checked;
